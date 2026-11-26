@@ -172,6 +172,32 @@ static int parse_shade_mode(const char* text, nb_shade_mode_t* out) {
 	return 0;
 }
 
+static int parse_log_level(const char* text, nb_log_level_t* out) {
+	if (!text || !out) { return 0; }
+
+	if (strcmp(text, "debug") == 0) {
+		*out = NB_LOG_DEBUG;
+		return 1;
+	}
+
+	if (strcmp(text, "info") == 0) {
+		*out = NB_LOG_INFO;
+		return 1;
+	}
+
+	if (strcmp(text, "warn") == 0) {
+		*out = NB_LOG_WARN;
+		return 1;
+	}
+
+	if (strcmp(text, "error") == 0) {
+		*out = NB_LOG_ERROR;
+		return 1;
+	}
+
+	return 0;
+}
+
 static int config_set_value(render_config_t* config, const char* key, const char* value) {
 	if (!config || !key || !value) { return 0; }
 
@@ -210,6 +236,22 @@ static int config_set_value(render_config_t* config, const char* key, const char
 	else if (strcmp(key, "light_direction") == 0) { return parse_vec3_floats(value, config->light_direction); }
 
 	else if (strcmp(key, "texture_vram_limit") == 0) { return parse_int(value, &config->texture_vram_limit); }
+
+	else if (strcmp(key, "wireframe_enabled") == 0) { return parse_bool(value, &config->wireframe_enabled); }
+
+	else if (strcmp(key, "xray_enabled") == 0) { return parse_bool(value, &config->xray_enabled); }
+
+	else if (strcmp(key, "hud_enabled") == 0) { return parse_bool(value, &config->hud_enabled); }
+
+	else if (strcmp(key, "hud_debug_enabled") == 0) { return parse_bool(value, &config->hud_debug_enabled); }
+
+	else if (strcmp(key, "log_level") == 0) { return parse_log_level(value, &config->log_level); }
+
+	else if (strcmp(key, "log_file") == 0) {
+		if (strlen(value) >= sizeof(config->log_file)) { return 0; }
+		snprintf(config->log_file, sizeof(config->log_file), "%s", value);
+		return 1;
+	}
 
 	return 0;
 }
@@ -269,6 +311,12 @@ void render_config_init(render_config_t* config) {
 	config->light_direction[1] = 0.7f;
 	config->light_direction[2] = 1.0f;
 	config->texture_vram_limit = 1024 * 1024;
+	config->wireframe_enabled = 0;
+	config->xray_enabled = 0;
+	config->hud_enabled = 1;
+	config->hud_debug_enabled = 0;
+	config->log_level = NB_LOG_INFO;
+	config->log_file[0] = '\0';
 }
 
 int config_load_file(render_config_t* config, const char* path) {
@@ -408,5 +456,11 @@ void config_print_usage(const char* program) {
 	fprintf(stdout, "  subdivide_large_triangles=0|1 subdivide_area_threshold=4096\n");
 	fprintf(stdout, "  blend_mode=none|alpha50|add|subtract|addquarter shade_mode=flat|gouraud\n");
 	fprintf(stdout, "  light_direction=0.4,0.7,1.0 texture_vram_limit=1048576\n");
-	fprintf(stdout, "hotkeys: 1 affine, 2 dither, 3 fog, 4 cull, 5 near-clip, r reset, esc quit\n");
+	fprintf(stdout, "  wireframe_enabled=0|1 xray_enabled=0|1\n");
+	fprintf(stdout, "  hud_enabled=0|1 hud_debug_enabled=0|1\n");
+	fprintf(stdout, "  log_level=debug|info|warn|error log_file=path\n");
+	fprintf(stdout, "hotkeys: 1 affine, 2 dither, 3 fog, 4 cull, 5 near-clip\n");
+	fprintf(stdout, "  p pause, f1 debug, f2 wireframe, f3 xray, f4 overlay, h hud\n");
+	fprintf(stdout, "  tab camera mode\n");
+	fprintf(stdout, "  wasd/qe move, arrows look, right mouse look, r reset, esc quit\n");
 }

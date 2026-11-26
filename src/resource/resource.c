@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,10 @@ static int resource_is_pot(int value) {
 
 static int resource_texture_layout(const texture_t* texture, size_t* pixel_bytes, size_t* palette_bytes) {
 	if (!texture || !pixel_bytes || !palette_bytes) { return 0; }
+
+	assert(texture->width > 0 && texture->height > 0);
+	assert(resource_is_pot(texture->width) && resource_is_pot(texture->height));
+
 	if (!resource_is_pot(texture->width) || !resource_is_pot(texture->height)) { return 0; }
 	if (!texture->pixels || !texture->palette) { return 0; }
 
@@ -158,6 +163,7 @@ texture_id resource_add_texture(resource_store_t* store, const texture_t* textur
 	if (!resource_texture_layout(texture, &pixel_bytes, &palette_bytes)) { return NB_RESOURCE_INVALID_ID; }
 
 	int total_bytes = (int)(pixel_bytes + palette_bytes);
+	assert(store->vram_limit >= 0 && store->vram_used >= 0 && total_bytes >= 0);
 	if (store->vram_used + total_bytes > store->vram_limit) { return NB_RESOURCE_INVALID_ID; }
 
 	for (int i = 0; i < NB_RESOURCE_MAX_TEXTURES; i++) {
@@ -221,9 +227,12 @@ mesh_t* resource_get_mesh(resource_store_t* store, mesh_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
 	int index = resource_index(id);
+	assert(index >= 0 && index < NB_RESOURCE_MAX_MESHES);
+
 	if (index < 0 || index >= NB_RESOURCE_MAX_MESHES) { return NULL; }
 
 	mesh_slot_t* slot = &store->meshes[index];
+	assert(slot->generation != 0);
 	if (!slot->mesh || slot->generation != resource_generation(id)) { return NULL; }
 
 	return slot->mesh;
@@ -233,9 +242,12 @@ texture_t* resource_get_texture(resource_store_t* store, texture_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
 	int index = resource_index(id);
+	assert(index >= 0 && index < NB_RESOURCE_MAX_TEXTURES);
+
 	if (index < 0 || index >= NB_RESOURCE_MAX_TEXTURES) { return NULL; }
 
 	texture_slot_t* slot = &store->textures[index];
+	assert(slot->generation != 0);
 	if (!slot->texture || slot->generation != resource_generation(id)) { return NULL; }
 
 	return slot->texture;
@@ -245,9 +257,12 @@ material_t* resource_get_material(resource_store_t* store, material_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
 	int index = resource_index(id);
+	assert(index >= 0 && index < NB_RESOURCE_MAX_MATERIALS);
+
 	if (index < 0 || index >= NB_RESOURCE_MAX_MATERIALS) { return NULL; }
 
 	material_slot_t* slot = &store->materials[index];
+	assert(slot->generation != 0);
 	if (!slot->material || slot->generation != resource_generation(id)) { return NULL; }
 
 	return slot->material;

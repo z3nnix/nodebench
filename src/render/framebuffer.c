@@ -112,6 +112,34 @@ void framebuffer_write(framebuffer_t* framebuffer, int x, int y, float r, float 
 	framebuffer->color[y * framebuffer->width + x] = rgb555_pack((int)clamp_channel(sr + 4.0f), (int)clamp_channel(sg + 4.0f), (int)clamp_channel(sb + 4.0f));
 }
 
+void framebuffer_draw_line(framebuffer_t* framebuffer, int x0, int y0, int x1, int y1, float r, float g, float b, nb_blend_mode_t blend) {
+	if (!framebuffer || !framebuffer->color) { return; }
+
+	int dx = abs(x1 - x0);
+	int dy = -abs(y1 - y0);
+	int step_x = x0 < x1 ? 1 : -1;
+	int step_y = y0 < y1 ? 1 : -1;
+	int error = dx + dy;
+
+	while (1) {
+		framebuffer_write(framebuffer, x0, y0, r, g, b, blend);
+
+		if (x0 == x1 && y0 == y1) { break; }
+
+		int doubled_error = 2 * error;
+
+		if (doubled_error >= dy) {
+			error += dy;
+			x0 += step_x;
+		}
+
+		if (doubled_error <= dx) {
+			error += dx;
+			y0 += step_y;
+		}
+	}
+}
+
 void framebuffer_resolve(framebuffer_t* framebuffer, uint32_t* output) {
 	if (!framebuffer || !framebuffer->color || !output) { return; }
 

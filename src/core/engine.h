@@ -2,14 +2,15 @@
 #define NB_CORE_ENGINE_H
 
 #include "core/config.h"
+#include "core/input.h"
+#include "core/log.h"
 #include "core/platform.h"
 #include "render/framebuffer.h"
 #include "render/renderer.h"
 #include "resource/resource.h"
+#include "ui/hud.h"
 
 #define NB_ENGINE_FIXED_STEP 0.016666667f
-#define NB_ENGINE_INPUT_CAPACITY 16
-#define NB_ENGINE_LOG_CAPACITY 512
 
 typedef enum {
 	NB_RESULT_OK = 0,
@@ -46,17 +47,6 @@ typedef struct {
 	float alpha;
 } engine_clock_t;
 
-typedef struct {
-	platform_key_t keys[NB_ENGINE_INPUT_CAPACITY];
-	int key_count;
-	int quit;
-} engine_input_t;
-
-typedef struct {
-	char last_message[NB_ENGINE_LOG_CAPACITY];
-	int message_count;
-} engine_log_t;
-
 typedef struct engine_t {
 	render_config_t config;
 	platform_t platform;
@@ -64,9 +54,11 @@ typedef struct engine_t {
 	renderer_t renderer;
 	resource_store_t resources;
 	engine_scene_t scene;
-	engine_input_t input;
+	input_state_t input;
 	engine_clock_t clock;
-	engine_log_t log;
+	hud_t hud;
+	log_t log;
+	int paused;
 	int platform_ready;
 	int framebuffer_ready;
 	int renderer_ready;

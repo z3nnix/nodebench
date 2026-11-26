@@ -1,12 +1,14 @@
 #include <stdlib.h>
 
 #include "core/engine.h"
+#include "core/input.h"
 #include "core/math.h"
 #include "render/color.h"
 #include "render/draw_list.h"
 #include "render/framebuffer.h"
 #include "render/renderer.h"
 #include "resource/resource.h"
+#include "scene/camera_controller.h"
 #include "scene/demo.h"
 #include "scene/loader_tscn.h"
 #include "scene/scene.h"
@@ -18,6 +20,8 @@ static const float pi = 3.14159265f;
 typedef struct {
 	scene_t scene;
 	draw_list_t draw_list;
+	camera_t camera;
+	camera_controller_t camera_controller;
 	int logged;
 } demo_scene_t;
 
@@ -28,34 +32,36 @@ static void demo_scale_matrix(mat4_t* out, vec3_t scale) {
 	out->m[10] = scale.z;
 }
 
-static void demo_configure_camera(engine_t* engine, draw_list_t* list, const scene_t* scene) {
-	float aspect = (float)engine->config.width / (float)engine->config.height;
+static camera_t demo_make_camera(engine_t* engine, const scene_t* scene) {
 	camera_t camera;
 
-	if (scene->camera_count > 0) {
-		camera = scene->cameras[0];
+	if (scene && scene->camera_count > 0) {
+		return scene->cameras[0];
 	}
 
-	else {
-		camera.eye.x = 0.0f;
-		camera.eye.y = 0.0f;
-		camera.eye.z = 5.0f;
-		camera.target.x = 0.0f;
-		camera.target.y = 0.0f;
-		camera.target.z = 0.0f;
-		camera.up.x = 0.0f;
-		camera.up.y = 1.0f;
-		camera.up.z = 0.0f;
-		camera.fov = 60.0f;
-		camera.near_plane = engine->config.near_plane;
-		camera.far_plane = engine->config.far_plane;
-	}
+	camera.eye.x = 0.0f;
+	camera.eye.y = 0.0f;
+	camera.eye.z = 5.0f;
+	camera.target.x = 0.0f;
+	camera.target.y = 0.0f;
+	camera.target.z = 0.0f;
+	camera.up.x = 0.0f;
+	camera.up.y = 1.0f;
+	camera.up.z = 0.0f;
+	camera.fov = 60.0f;
+	camera.near_plane = engine->config.near_plane;
+	camera.far_plane = engine->config.far_plane;
 
+	return camera;
+}
+
+static void demo_configure_camera(engine_t* engine, draw_list_t* list, const camera_t* camera) {
+	float aspect = (float)engine->config.width / (float)engine->config.height;
 	mat4_t projection;
 	mat4_t view;
 
-	mat4_perspective(&projection, camera.fov * pi / 180.0f, aspect, camera.near_plane, camera.far_plane);
-	mat4_look_at(&view, camera.eye, camera.target, camera.up);
+	mat4_perspective(&projection, camera->fov * pi / 180.0f, aspect, camera->near_plane, camera->far_plane);
+	mat4_look_at(&view, camera->eye, camera->target, camera->up);
 	draw_list_set_camera(list, &view, &projection);
 }
 
@@ -95,6 +101,8 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 	}
 
 	demo_configure_light(engine, &runtime->scene);
+	runtime->camera = demo_make_camera(engine, &runtime->scene);
+	camera_controller_init(&runtime->camera_controller, &runtime->camera);
 	*context = runtime;
 
 	engine_log(engine, "loaded scene=%s entities=%d meshes=%d cameras=%d lights=%d vram=%d", NB_DEMO_SCENE_PATH, runtime->scene.entity_count, runtime->scene.mesh_renderer_count, runtime->scene.camera_count, runtime->scene.light_count, resource_vram_used(&engine->resources));
@@ -103,20 +111,28 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 }
 
 static void demo_scene_update(engine_t* engine, void* context, float dt) {
-	(void)engine;
-
 	demo_scene_t* runtime = (demo_scene_t*)context;
-	if (!runtime) {
+	if (!engine || !runtime) {
 		return;
 	}
 
-	scene_t* scene = &runtime->scene;
-	for (int i = 0; i < scene->transform_count; i++) {
-		transform_t* transform = &scene->transforms[i];
-		transform->previous_rotation = transform->rotation;
-		transform->rotation.y += dt * transform->spin_speed;
-		transform->rotation.x += dt * transform->spin_speed * 0.6f;
+	if (input_was_pressed(&engine->input, NB_ACTION_CAMERA_MODE)) {
+		camera_mode_t mode = camera_controller_get_mode(&runtime->camera_controller);
+		camera_controller_set_mode(&runtime->camera_controller, mode == NB_CAMERA_MODE_FREE ? NB_CAMERA_MODE_ORBIT : NB_CAMERA_MODE_FREE);
+		engine_log(engine, "camera mode=%s", mode == NB_CAMERA_MODE_FREE ? "orbit" : "free");
 	}
+
+	if (!engine->paused) {
+		scene_t* scene = &runtime->scene;
+		for (int i = 0; i < scene->transform_count; i++) {
+			transform_t* transform = &scene->transforms[i];
+			transform->previous_rotation = transform->rotation;
+			transform->rotation.y += dt * transform->spin_speed;
+			transform->rotation.x += dt * transform->spin_speed * 0.6f;
+		}
+	}
+
+	camera_controller_update(&runtime->camera_controller, &runtime->camera, &engine->input, dt);
 }
 
 static void demo_scene_render(engine_t* engine, void* context, float alpha) {
@@ -137,7 +153,7 @@ static void demo_scene_render(engine_t* engine, void* context, float alpha) {
 	draw_list_t* list = &runtime->draw_list;
 
 	draw_list_clear(list);
-	demo_configure_camera(engine, list, scene);
+	demo_configure_camera(engine, list, &runtime->camera);
 
 	uint16_t background_top = rgb555_pack(6, 10, 22);
 	uint16_t background_bottom = rgb555_pack(18, 26, 44);
@@ -205,7 +221,9 @@ static void demo_scene_reset(engine_t* engine, void* context) {
 		transform->previous_rotation = transform->initial_rotation;
 	}
 
-	demo_configure_camera(engine, &runtime->draw_list, scene);
+	runtime->camera = demo_make_camera(engine, scene);
+	camera_controller_reset(&runtime->camera_controller, &runtime->camera);
+	demo_configure_camera(engine, &runtime->draw_list, &runtime->camera);
 	demo_configure_light(engine, scene);
 }
 

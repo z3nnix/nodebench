@@ -1,5 +1,6 @@
 #include <SDL2/SDL.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "core/platform.h"
 
@@ -7,6 +8,20 @@ static platform_key_t map_key(SDL_Keycode sym) {
 	if (sym == SDLK_ESCAPE) { return NB_KEY_ESCAPE; }
 
 	else if (sym == SDLK_r) { return NB_KEY_R; }
+
+	else if (sym == SDLK_p) { return NB_KEY_P; }
+
+	else if (sym == SDLK_TAB) { return NB_KEY_TAB; }
+
+	else if (sym == SDLK_F1) { return NB_KEY_F1; }
+
+	else if (sym == SDLK_F2) { return NB_KEY_F2; }
+
+	else if (sym == SDLK_F3) { return NB_KEY_F3; }
+
+	else if (sym == SDLK_F4) { return NB_KEY_F4; }
+
+	else if (sym == SDLK_h) { return NB_KEY_H; }
 
 	else if (sym == SDLK_1) { return NB_KEY_1; }
 
@@ -17,6 +32,26 @@ static platform_key_t map_key(SDL_Keycode sym) {
 	else if (sym == SDLK_4) { return NB_KEY_4; }
 
 	else if (sym == SDLK_5) { return NB_KEY_5; }
+
+	else if (sym == SDLK_w) { return NB_KEY_W; }
+
+	else if (sym == SDLK_a) { return NB_KEY_A; }
+
+	else if (sym == SDLK_s) { return NB_KEY_S; }
+
+	else if (sym == SDLK_d) { return NB_KEY_D; }
+
+	else if (sym == SDLK_q) { return NB_KEY_Q; }
+
+	else if (sym == SDLK_e) { return NB_KEY_E; }
+
+	else if (sym == SDLK_UP) { return NB_KEY_UP; }
+
+	else if (sym == SDLK_DOWN) { return NB_KEY_DOWN; }
+
+	else if (sym == SDLK_LEFT) { return NB_KEY_LEFT; }
+
+	else if (sym == SDLK_RIGHT) { return NB_KEY_RIGHT; }
 
 	return NB_KEY_NONE;
 }
@@ -32,6 +67,9 @@ int platform_init(platform_t* platform, const platform_desc_t* desc) {
 	platform->height = desc->height;
 	platform->last_time = 0;
 	platform->key_count = 0;
+	platform->mouse_dx = 0;
+	platform->mouse_dy = 0;
+	memset(platform->down, 0, sizeof(platform->down));
 
 	if (platform->width <= 0 || platform->height <= 0) { return 0; }
 
@@ -89,12 +127,18 @@ void platform_shutdown(platform_t* platform) {
 	platform->window = NULL;
 	platform->pixels = NULL;
 	platform->key_count = 0;
+	platform->mouse_dx = 0;
+	platform->mouse_dy = 0;
+	memset(platform->down, 0, sizeof(platform->down));
 
 	SDL_Quit();
 }
 
 void platform_pump_events(platform_t* platform, int* should_quit) {
 	if (!platform || !should_quit) { return; }
+
+	platform->mouse_dx = 0;
+	platform->mouse_dy = 0;
 
 	SDL_Event event;
 
@@ -104,10 +148,25 @@ void platform_pump_events(platform_t* platform, int* should_quit) {
 		if (event.type == SDL_KEYDOWN) {
 			platform_key_t key = map_key(event.key.keysym.sym);
 
-			if (key != NB_KEY_NONE && platform->key_count < 16) { platform->keys[platform->key_count++] = key; }
-
-			if (key == NB_KEY_ESCAPE) { *should_quit = 1; }
+			if (key != NB_KEY_NONE) {
+				if (!event.key.repeat && platform->key_count < NB_PLATFORM_KEY_QUEUE_CAPACITY) { platform->keys[platform->key_count++] = key; }
+				platform->down[key] = 1;
+			}
 		}
+
+		if (event.type == SDL_KEYUP) {
+			platform_key_t key = map_key(event.key.keysym.sym);
+			if (key != NB_KEY_NONE) { platform->down[key] = 0; }
+		}
+
+		if (event.type == SDL_MOUSEMOTION) {
+			platform->mouse_dx += event.motion.xrel;
+			platform->mouse_dy += event.motion.yrel;
+		}
+
+		if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_RIGHT) { SDL_SetRelativeMouseMode(SDL_TRUE); }
+
+		if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_RIGHT) { SDL_SetRelativeMouseMode(SDL_FALSE); }
 	}
 }
 
@@ -121,6 +180,21 @@ int platform_pop_key(platform_t* platform, platform_key_t* key) {
 	platform->key_count--;
 
 	return 1;
+}
+
+int platform_key_down(const platform_t* platform, platform_key_t key) {
+	if (!platform || key <= NB_KEY_NONE || key >= NB_KEY_COUNT) { return 0; }
+	return platform->down[key];
+}
+
+void platform_mouse_delta(platform_t* platform, int* dx, int* dy) {
+	if (!platform) { return; }
+
+	if (dx) { *dx = platform->mouse_dx; }
+	if (dy) { *dy = platform->mouse_dy; }
+
+	platform->mouse_dx = 0;
+	platform->mouse_dy = 0;
 }
 
 float platform_delta_time(platform_t* platform) {

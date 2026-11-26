@@ -18,6 +18,7 @@ void framebuffer_shutdown(framebuffer_t* framebuffer);
 void framebuffer_clear(framebuffer_t* framebuffer, uint16_t color);
 void framebuffer_clear_gradient(framebuffer_t* framebuffer, uint16_t top, uint16_t bottom);
 void framebuffer_write(framebuffer_t* framebuffer, int x, int y, float r, float g, float b, nb_blend_mode_t blend);
+void framebuffer_draw_line(framebuffer_t* framebuffer, int x0, int y0, int x1, int y1, float r, float g, float b, nb_blend_mode_t blend);
 void framebuffer_resolve(framebuffer_t* framebuffer, uint32_t* output);
 
 #endif

@@ -1,6 +1,8 @@
 #ifndef NB_CORE_CONFIG_H
 #define NB_CORE_CONFIG_H
 
+#include "core/log.h"
+
 typedef enum {
 	NB_BLEND_NONE,
 	NB_BLEND_ALPHA_50,
@@ -37,6 +39,12 @@ typedef struct {
 	nb_shade_mode_t shade_mode;
 	float light_direction[3];
 	int texture_vram_limit;
+	int wireframe_enabled;
+	int xray_enabled;
+	int hud_enabled;
+	int hud_debug_enabled;
+	nb_log_level_t log_level;
+	char log_file[256];
 } render_config_t;
 
 void render_config_init(render_config_t* config);

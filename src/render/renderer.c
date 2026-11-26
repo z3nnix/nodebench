@@ -161,6 +161,12 @@ static void rasterize_triangle(renderer_t* renderer, const projected_triangle_t*
 				b = b * (float)tb / 255.0f;
 			}
 
+			if (config->xray_enabled) {
+				r *= 0.35f;
+				g *= 0.35f;
+				b *= 0.35f;
+			}
+
 			framebuffer_write(framebuffer, x, y, r, g, b, blend_mode);
 		}
 	}
@@ -177,6 +183,10 @@ int renderer_init(renderer_t* renderer, framebuffer_t* framebuffer) {
 	renderer->projected_capacity = 0;
 	renderer->triangle_capacity = 0;
 	renderer->command_count = 0;
+	renderer->draw_calls = 0;
+	renderer->drawn_triangles = 0;
+	renderer->culled_triangles = 0;
+	renderer->near_culled_triangles = 0;
 
 	mat4_identity(&renderer->view);
 	mat4_identity(&renderer->view_projection);
@@ -199,6 +209,10 @@ void renderer_shutdown(renderer_t* renderer) {
 	renderer->projected_capacity = 0;
 	renderer->triangle_capacity = 0;
 	renderer->command_count = 0;
+	renderer->draw_calls = 0;
+	renderer->drawn_triangles = 0;
+	renderer->culled_triangles = 0;
+	renderer->near_culled_triangles = 0;
 }
 
 void renderer_submit(renderer_t* renderer, const draw_list_t* list) {
@@ -290,7 +304,11 @@ static void renderer_draw_command(renderer_t* renderer, const draw_command_t* co
 		const projected_vertex_t* base_c = &renderer->projected[source->c];
 
 		if (config->reject_near_triangles) {
-			if (base_a->clip.w <= config->near_plane || base_b->clip.w <= config->near_plane || base_c->clip.w <= config->near_plane) { continue; }
+			if (base_a->clip.w <= config->near_plane || base_b->clip.w <= config->near_plane || base_c->clip.w <= config->near_plane) {
+				renderer->near_culled_triangles++;
+				renderer->culled_triangles++;
+				continue;
+			}
 		}
 
 		projected_vertex_t v0 = *base_a;
@@ -299,7 +317,10 @@ static void renderer_draw_command(renderer_t* renderer, const draw_command_t* co
 
 		float area = edge2(v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
 		if (fabsf(area) < 0.0001f) { continue; }
-		if (config->cull_backfaces && area > 0.0f) { continue; }
+		if (config->cull_backfaces && area > 0.0f) {
+			renderer->culled_triangles++;
+			continue;
+		}
 
 		vec3_t edge_a = vec3_sub(renderer->world[source->b], renderer->world[source->a]);
 		vec3_t edge_b = vec3_sub(renderer->world[source->c], renderer->world[source->a]);
@@ -335,15 +356,40 @@ static void renderer_draw_command(renderer_t* renderer, const draw_command_t* co
 		triangle_count++;
 	}
 
+	renderer->drawn_triangles += triangle_count;
+
 	if (triangle_count > 1) { qsort(renderer->triangles, (size_t)triangle_count, sizeof(projected_triangle_t), triangle_compare); }
 
-	for (int i = 0; i < triangle_count; i++) { rasterize_triangle(renderer, &renderer->triangles[i], command->texture, material->blend_mode); }
+	nb_blend_mode_t blend_mode = config->xray_enabled ? NB_BLEND_ADD : material->blend_mode;
+
+	if (config->wireframe_enabled) {
+		nb_blend_mode_t wire_blend = config->xray_enabled ? NB_BLEND_ADD : NB_BLEND_NONE;
+		float wire_r = 40.0f * material->vertex_color_tint.x;
+		float wire_g = 220.0f * material->vertex_color_tint.y;
+		float wire_b = 180.0f * material->vertex_color_tint.z;
+
+		for (int i = 0; i < triangle_count; i++) {
+			const projected_triangle_t* triangle = &renderer->triangles[i];
+			framebuffer_draw_line(renderer->framebuffer, (int)triangle->v[0].x, (int)triangle->v[0].y, (int)triangle->v[1].x, (int)triangle->v[1].y, wire_r, wire_g, wire_b, wire_blend);
+			framebuffer_draw_line(renderer->framebuffer, (int)triangle->v[1].x, (int)triangle->v[1].y, (int)triangle->v[2].x, (int)triangle->v[2].y, wire_r, wire_g, wire_b, wire_blend);
+			framebuffer_draw_line(renderer->framebuffer, (int)triangle->v[2].x, (int)triangle->v[2].y, (int)triangle->v[0].x, (int)triangle->v[0].y, wire_r, wire_g, wire_b, wire_blend);
+		}
+	}
+
+	else {
+		for (int i = 0; i < triangle_count; i++) { rasterize_triangle(renderer, &renderer->triangles[i], command->texture, blend_mode); }
+	}
 }
 
 void renderer_flush(renderer_t* renderer) {
 	if (!renderer) {
 		return;
 	}
+
+	renderer->draw_calls = renderer->command_count;
+	renderer->drawn_triangles = 0;
+	renderer->culled_triangles = 0;
+	renderer->near_culled_triangles = 0;
 
 	for (int i = 0; i < renderer->command_count; i++) {
 		renderer_draw_command(renderer, &renderer->commands[i]);

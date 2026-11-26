@@ -38,6 +38,10 @@ typedef struct {
 	int command_count;
 	int projected_capacity;
 	int triangle_capacity;
+	int draw_calls;
+	int drawn_triangles;
+	int culled_triangles;
+	int near_culled_triangles;
 } renderer_t;
 
 int renderer_init(renderer_t* renderer, framebuffer_t* framebuffer);

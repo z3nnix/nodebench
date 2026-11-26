@@ -30,11 +30,8 @@ void engine_log(engine_t* engine, const char* format, ...) {
 
 	va_list args;
 	va_start(args, format);
-	vsnprintf(engine->log.last_message, sizeof(engine->log.last_message), format, args);
+	log_vwrite(&engine->log, NB_LOG_INFO, format, args);
 	va_end(args);
-
-	fprintf(stderr, "%s\n", engine->log.last_message);
-	engine->log.message_count++;
 }
 
 nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
@@ -48,6 +45,9 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	int cli_status = config_apply_cli(&engine->config, argc, argv);
 	if (cli_status == 2) { return NB_RESULT_HELP; }
 	if (cli_status == 0) { return NB_RESULT_ERROR_CONFIG; }
+
+	if (!log_init(&engine->log, engine->config.log_file, engine->config.log_level)) { return NB_RESULT_ERROR_CONFIG; }
+	hud_init(&engine->hud);
 
 	platform_desc_t platform_desc = { "NodeBench", engine->config.width, engine->config.height, 3, 0 };
 	if (!platform_init(&engine->platform, &platform_desc)) { return NB_RESULT_ERROR_PLATFORM; }
@@ -65,64 +65,117 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	return NB_RESULT_OK;
 }
 
-static void engine_poll_events(engine_t* engine) {
+static void engine_log_state(engine_t* engine) {
 	if (!engine) { return; }
 
-	platform_pump_events(&engine->platform, &engine->input.quit);
+	engine_log(engine, "affine=%.2f dither=%d fog=%d cull=%d clip=%d wire=%d xray=%d hud=%d overlay=%d paused=%d", engine->config.affine_strength, engine->config.dither_enabled, engine->config.fog_enabled, engine->config.cull_backfaces, engine->config.reject_near_triangles, engine->config.wireframe_enabled, engine->config.xray_enabled, engine->config.hud_enabled, engine->config.hud_debug_enabled, engine->paused);
+}
 
-	platform_key_t key;
-	while (platform_pop_key(&engine->platform, &key)) {
-		if (engine->input.key_count < NB_ENGINE_INPUT_CAPACITY) {
-			engine->input.keys[engine->input.key_count++] = key;
-		}
+static void engine_cycle_debug(engine_t* engine) {
+	if (!engine) { return; }
+
+	if (!engine->config.wireframe_enabled && !engine->config.xray_enabled) {
+		engine->config.wireframe_enabled = 1;
+	}
+
+	else if (engine->config.wireframe_enabled && !engine->config.xray_enabled) {
+		engine->config.wireframe_enabled = 0;
+		engine->config.xray_enabled = 1;
+	}
+
+	else {
+		engine->config.wireframe_enabled = 0;
+		engine->config.xray_enabled = 0;
 	}
 }
 
-static void engine_apply_key(engine_t* engine, platform_key_t key) {
+static void engine_apply_actions(engine_t* engine) {
 	if (!engine) { return; }
 
-	if (key == NB_KEY_1) {
+	input_state_t* input = &engine->input;
+	int changed = 0;
+
+	if (input_was_pressed(input, NB_ACTION_QUIT)) { input->quit = 1; }
+
+	if (input_was_pressed(input, NB_ACTION_PAUSE)) {
+		engine->paused = !engine->paused;
+		changed = 1;
+	}
+
+	if (input_was_pressed(input, NB_ACTION_DEBUG_CYCLE)) {
+		engine_cycle_debug(engine);
+		changed = 1;
+	}
+
+	if (input_was_pressed(input, NB_ACTION_DEBUG_WIREFRAME)) {
+		engine->config.wireframe_enabled = !engine->config.wireframe_enabled;
+		changed = 1;
+	}
+
+	if (input_was_pressed(input, NB_ACTION_DEBUG_XRAY)) {
+		engine->config.xray_enabled = !engine->config.xray_enabled;
+		changed = 1;
+	}
+
+	if (input_was_pressed(input, NB_ACTION_HUD)) {
+		engine->config.hud_enabled = !engine->config.hud_enabled;
+		changed = 1;
+	}
+
+	if (input_was_pressed(input, NB_ACTION_HUD_DEBUG)) {
+		engine->config.hud_debug_enabled = !engine->config.hud_debug_enabled;
+		changed = 1;
+	}
+
+	if (input_was_pressed(input, NB_ACTION_TOGGLE_AFFINE)) {
 		engine->config.affine_strength = engine->config.affine_strength > 0.5f ? 0.0f : 1.0f;
+		changed = 1;
 	}
 
-	else if (key == NB_KEY_2) {
+	if (input_was_pressed(input, NB_ACTION_TOGGLE_DITHER)) {
 		engine->config.dither_enabled = !engine->config.dither_enabled;
+		changed = 1;
 	}
 
-	else if (key == NB_KEY_3) {
+	if (input_was_pressed(input, NB_ACTION_TOGGLE_FOG)) {
 		engine->config.fog_enabled = !engine->config.fog_enabled;
+		changed = 1;
 	}
 
-	else if (key == NB_KEY_4) {
+	if (input_was_pressed(input, NB_ACTION_TOGGLE_CULL)) {
 		engine->config.cull_backfaces = !engine->config.cull_backfaces;
+		changed = 1;
 	}
 
-	else if (key == NB_KEY_5) {
+	if (input_was_pressed(input, NB_ACTION_TOGGLE_CLIP)) {
 		engine->config.reject_near_triangles = !engine->config.reject_near_triangles;
+		changed = 1;
 	}
 
-	else if (key == NB_KEY_R && engine->scene.reset) {
+	if (input_was_pressed(input, NB_ACTION_RESET) && engine->scene.reset) {
 		engine->scene.reset(engine, engine->scene.context);
+		changed = 1;
 	}
 
-	engine_log(engine, "affine=%.2f dither=%d fog=%d cull=%d clip=%d", engine->config.affine_strength, engine->config.dither_enabled, engine->config.fog_enabled, engine->config.cull_backfaces, engine->config.reject_near_triangles);
+	if (changed) { engine_log_state(engine); }
 }
 
 void engine_update(engine_t* engine, float dt) {
 	if (!engine) { return; }
 
-	for (int i = 0; i < engine->input.key_count; i++) {
-		engine_apply_key(engine, engine->input.keys[i]);
-	}
-	engine->input.key_count = 0;
+	engine_apply_actions(engine);
 
 	if (engine->scene.update) { engine->scene.update(engine, engine->scene.context, dt); }
+
+	input_clear_transient(&engine->input);
 }
 
 void engine_render(engine_t* engine, float alpha) {
 	if (!engine || !engine->platform_ready || !engine->framebuffer_ready || !engine->renderer_ready) { return; }
 
 	if (engine->scene.render) { engine->scene.render(engine, engine->scene.context, alpha); }
+
+	hud_draw(&engine->hud, &engine->framebuffer, &engine->config, engine->paused);
 
 	uint32_t* output = platform_pixels(&engine->platform);
 	framebuffer_resolve(&engine->framebuffer, output);
@@ -144,6 +197,7 @@ void engine_shutdown(engine_t* engine) {
 	engine->renderer_ready = 0;
 	engine->framebuffer_ready = 0;
 	engine->platform_ready = 0;
+	log_shutdown(&engine->log);
 }
 
 nb_result_t engine_run(int argc, char** argv) {
@@ -170,13 +224,14 @@ nb_result_t engine_run(int argc, char** argv) {
 	}
 	engine.scene_ready = 1;
 
-	engine_log(&engine, "affine=%.2f dither=%d fog=%d cull=%d clip=%d", engine.config.affine_strength, engine.config.dither_enabled, engine.config.fog_enabled, engine.config.cull_backfaces, engine.config.reject_near_triangles);
+	engine_log_state(&engine);
 
 	while (!engine.input.quit) {
 		float dt = platform_delta_time(&engine.platform);
 		if (dt > 0.25f) { dt = 0.25f; }
 
-		engine_poll_events(&engine);
+		platform_pump_events(&engine.platform, &engine.input.quit);
+		input_update(&engine.input, &engine.platform);
 		if (engine.input.quit) { break; }
 
 		engine.clock.elapsed += dt;
@@ -189,6 +244,7 @@ nb_result_t engine_run(int argc, char** argv) {
 		}
 
 		engine.clock.alpha = engine.clock.accumulator / NB_ENGINE_FIXED_STEP;
+		hud_update(&engine.hud, dt, engine.renderer.draw_calls, engine.renderer.drawn_triangles, engine.renderer.culled_triangles, engine.renderer.near_culled_triangles, resource_vram_used(&engine.resources));
 		engine_render(&engine, engine.clock.alpha);
 	}
 
