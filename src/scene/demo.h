@@ -1,6 +1,8 @@
 #ifndef NB_SCENE_DEMO_H
 #define NB_SCENE_DEMO_H
 
-int demo_run(int argc, char** argv);
+#include "core/engine.h"
+
+void demo_scene_register(engine_t* engine);
 
 #endif

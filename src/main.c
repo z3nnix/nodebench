@@ -1,5 +1,5 @@
-#include "scene/demo.h"
+#include "core/engine.h"
 
 int main(int argc, char** argv) {
-	return demo_run(argc, argv);
+	return (int)engine_run(argc, argv);
 }
