@@ -3,6 +3,7 @@
 #include "core/engine.h"
 #include "core/math.h"
 #include "render/color.h"
+#include "render/draw_list.h"
 #include "render/framebuffer.h"
 #include "render/renderer.h"
 #include "resource/resource.h"
@@ -16,6 +17,8 @@ static const float pi = 3.14159265f;
 
 typedef struct {
 	scene_t scene;
+	draw_list_t draw_list;
+	int logged;
 } demo_scene_t;
 
 static void demo_scale_matrix(mat4_t* out, vec3_t scale) {
@@ -25,7 +28,7 @@ static void demo_scale_matrix(mat4_t* out, vec3_t scale) {
 	out->m[10] = scale.z;
 }
 
-static void demo_configure_camera(engine_t* engine, const scene_t* scene) {
+static void demo_configure_camera(engine_t* engine, draw_list_t* list, const scene_t* scene) {
 	float aspect = (float)engine->config.width / (float)engine->config.height;
 	camera_t camera;
 
@@ -53,7 +56,7 @@ static void demo_configure_camera(engine_t* engine, const scene_t* scene) {
 
 	mat4_perspective(&projection, camera.fov * pi / 180.0f, aspect, camera.near_plane, camera.far_plane);
 	mat4_look_at(&view, camera.eye, camera.target, camera.up);
-	renderer_set_camera(&engine->renderer, &view, &projection);
+	draw_list_set_camera(list, &view, &projection);
 }
 
 static void demo_configure_light(engine_t* engine, const scene_t* scene) {
@@ -79,6 +82,8 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 	}
 
 	scene_init(&runtime->scene);
+	draw_list_init(&runtime->draw_list);
+	runtime->logged = 0;
 
 	nb_result_t result = scene_load_tscn(NB_DEMO_SCENE_PATH, engine, &runtime->scene);
 	if (result != NB_RESULT_OK) {
@@ -89,7 +94,6 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 		return result;
 	}
 
-	demo_configure_camera(engine, &runtime->scene);
 	demo_configure_light(engine, &runtime->scene);
 	*context = runtime;
 
@@ -130,7 +134,10 @@ static void demo_scene_render(engine_t* engine, void* context, float alpha) {
 	}
 
 	scene_t* scene = &runtime->scene;
-	demo_configure_camera(engine, scene);
+	draw_list_t* list = &runtime->draw_list;
+
+	draw_list_clear(list);
+	demo_configure_camera(engine, list, scene);
 
 	uint16_t background_top = rgb555_pack(6, 10, 22);
 	uint16_t background_bottom = rgb555_pack(18, 26, 44);
@@ -172,7 +179,16 @@ static void demo_scene_render(engine_t* engine, void* context, float alpha) {
 		mat4_multiply(&model, &model, &rotation_x);
 		mat4_multiply(&model, &model, &scale);
 
-		renderer_draw_mesh(&engine->renderer, mesh, texture, &model, material->blend_mode);
+		draw_list_push(list, mesh, texture, material, &model);
+	}
+
+	draw_list_sort(list);
+	renderer_submit(&engine->renderer, list);
+	renderer_flush(&engine->renderer);
+
+	if (!runtime->logged) {
+		engine_log(engine, "draw list: commands=%d", list->count);
+		runtime->logged = 1;
 	}
 }
 
@@ -189,7 +205,7 @@ static void demo_scene_reset(engine_t* engine, void* context) {
 		transform->previous_rotation = transform->initial_rotation;
 	}
 
-	demo_configure_camera(engine, scene);
+	demo_configure_camera(engine, &runtime->draw_list, scene);
 	demo_configure_light(engine, scene);
 }
 

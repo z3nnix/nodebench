@@ -1,8 +1,9 @@
-#ifndef NB_RENDER_RENDERER_H
-#define NB_RENDER_RENDERER_H
+#ifndef NODEBENCH_RENDER_RENDERER_H
+#define NODEBENCH_RENDER_RENDERER_H
 
 #include "core/config.h"
 #include "core/math.h"
+#include "render/draw_list.h"
 #include "render/framebuffer.h"
 #include "render/mesh.h"
 #include "render/texture.h"
@@ -33,13 +34,15 @@ typedef struct {
 	projected_vertex_t* projected;
 	vec3_t* world;
 	projected_triangle_t* triangles;
+	draw_command_t commands[NB_DRAW_LIST_MAX_COMMANDS];
+	int command_count;
 	int projected_capacity;
 	int triangle_capacity;
 } renderer_t;
 
 int renderer_init(renderer_t* renderer, framebuffer_t* framebuffer);
 void renderer_shutdown(renderer_t* renderer);
-void renderer_set_camera(renderer_t* renderer, const mat4_t* view, const mat4_t* projection);
-void renderer_draw_mesh(renderer_t* renderer, const mesh_t* mesh, const texture_t* texture, const mat4_t* model, nb_blend_mode_t blend_mode);
+void renderer_submit(renderer_t* renderer, const draw_list_t* list);
+void renderer_flush(renderer_t* renderer);
 
 #endif

@@ -7,16 +7,15 @@
 #include <string.h>
 
 #include "resource/loader.h"
+#include "resource/loader_tres.h"
 
 #define NB_TSCN_MAX_EXT_RESOURCES 64
-#define NB_TSCN_MAX_SUB_RESOURCES 64
 #define NB_TSCN_MAX_NODES 256
 #define NB_TSCN_LINE_CAPACITY 1024
 
 typedef enum {
 	TSCN_SECTION_HEADER = 0,
 	TSCN_SECTION_EXT,
-	TSCN_SECTION_SUB,
 	TSCN_SECTION_NODE,
 	TSCN_SECTION_OTHER
 } tscn_section_t;
@@ -31,16 +30,6 @@ typedef struct {
 	int has_image;
 	int has_palette;
 } tscn_ext_resource_t;
-
-typedef struct {
-	char id[64];
-	char type[64];
-	char texture_id[64];
-	char palette_id[64];
-	char blend_mode[32];
-	char shade_mode[32];
-	uint32_t handle;
-} tscn_sub_resource_t;
 
 typedef struct {
 	char name[64];
@@ -273,49 +262,7 @@ static const char* tscn_resolve_path(const char* path) {
 	return buffer;
 }
 
-static nb_blend_mode_t tscn_parse_blend_mode(const char* value) {
-	if (strcmp(value, "alpha_50") == 0) {
-		return NB_BLEND_ALPHA_50;
-	}
-
-	if (strcmp(value, "add") == 0) {
-		return NB_BLEND_ADD;
-	}
-
-	if (strcmp(value, "subtract") == 0) {
-		return NB_BLEND_SUBTRACT;
-	}
-
-	if (strcmp(value, "add_quarter") == 0) {
-		return NB_BLEND_ADD_QUARTER;
-	}
-
-	return NB_BLEND_NONE;
-}
-
-static nb_shade_mode_t tscn_parse_shade_mode(const char* value) {
-	if (strcmp(value, "flat") == 0) {
-		return NB_SHADE_FLAT;
-	}
-
-	return NB_SHADE_GOURAUD;
-}
-
 static tscn_ext_resource_t* tscn_find_ext(tscn_ext_resource_t* resources, int count, const char* id) {
-	if (!id[0]) {
-		return NULL;
-	}
-
-	for (int i = 0; i < count; i++) {
-		if (strcmp(resources[i].id, id) == 0) {
-			return &resources[i];
-		}
-	}
-
-	return NULL;
-}
-
-static tscn_sub_resource_t* tscn_find_sub(tscn_sub_resource_t* resources, int count, const char* id) {
 	if (!id[0]) {
 		return NULL;
 	}
@@ -367,6 +314,12 @@ static int tscn_load_ext_resource(engine_t* engine, tscn_ext_resource_t* resourc
 		return 1;
 	}
 
+	if (strcmp(resource->type, "NBPS1Material") == 0) {
+		resource->handle = material_load_tres(engine, path);
+
+		return resource->handle != NB_RESOURCE_INVALID_ID;
+	}
+
 	return 1;
 }
 
@@ -382,65 +335,7 @@ static void tscn_free_ext_resources(tscn_ext_resource_t* resources, int count) {
 	}
 }
 
-static int tscn_build_materials(engine_t* engine, scene_t* scene, tscn_sub_resource_t* resources, int count, tscn_ext_resource_t* ext_resources, int ext_count) {
-	for (int i = 0; i < count; i++) {
-		tscn_sub_resource_t* resource = &resources[i];
-		if (strcmp(resource->type, "NBPS1Material") != 0) {
-			continue;
-		}
-
-		tscn_ext_resource_t* image_resource = tscn_find_ext(ext_resources, ext_count, resource->texture_id);
-		tscn_ext_resource_t* palette_resource = tscn_find_ext(ext_resources, ext_count, resource->palette_id);
-		if (!image_resource || !palette_resource || !image_resource->has_image || !palette_resource->has_palette) {
-			return 0;
-		}
-
-		texture_format_t format = palette_resource->palette.count > 16 ? NB_TEXTURE_8BIT : NB_TEXTURE_4BIT;
-		uint8_t* pixels = NULL;
-		if (!image_quantize(&image_resource->image, &palette_resource->palette, format, &pixels) || !pixels) {
-			return 0;
-		}
-
-		if (!scene_own(scene, pixels)) {
-			free(pixels);
-
-			return 0;
-		}
-
-		size_t palette_size = (size_t)palette_resource->palette.count * sizeof(uint16_t);
-		uint16_t* palette = (uint16_t*)malloc(palette_size);
-		if (!palette) {
-			return 0;
-		}
-
-		memcpy(palette, palette_resource->palette.colors, palette_size);
-		if (!scene_own(scene, palette)) {
-			free(palette);
-
-			return 0;
-		}
-
-		texture_t texture;
-		texture_init(&texture, image_resource->image.width, image_resource->image.height, format, pixels, palette, NB_TEXTURE_TRANSPARENT);
-
-		material_t material;
-		material.blend_mode = tscn_parse_blend_mode(resource->blend_mode);
-		material.shade_mode = tscn_parse_shade_mode(resource->shade_mode);
-		material.texture = resource_add_texture(&engine->resources, &texture);
-		if (material.texture == NB_RESOURCE_INVALID_ID) {
-			return 0;
-		}
-
-		resource->handle = resource_add_material(&engine->resources, &material);
-		if (resource->handle == NB_RESOURCE_INVALID_ID) {
-			return 0;
-		}
-	}
-
-	return 1;
-}
-
-static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, tscn_ext_resource_t* ext_resources, int ext_count, tscn_sub_resource_t* sub_resources, int sub_count) {
+static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, tscn_ext_resource_t* ext_resources, int ext_count) {
 	for (int i = 0; i < count; i++) {
 		tscn_node_t* node = &nodes[i];
 		entity_id_t id = scene_create_entity(scene);
@@ -471,9 +366,9 @@ static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, t
 				mesh_resource = tscn_find_ext(ext_resources, ext_count, node->mesh_ref);
 			}
 
-			tscn_sub_resource_t* material_resource = NULL;
-			if (node->material_ref_kind == 2) {
-				material_resource = tscn_find_sub(sub_resources, sub_count, node->material_ref);
+			tscn_ext_resource_t* material_resource = NULL;
+			if (node->material_ref_kind == 1) {
+				material_resource = tscn_find_ext(ext_resources, ext_count, node->material_ref);
 			}
 
 			if (!mesh_resource || !material_resource || mesh_resource->handle == NB_RESOURCE_INVALID_ID || material_resource->handle == NB_RESOURCE_INVALID_ID) {
@@ -520,17 +415,14 @@ nb_result_t scene_load_tscn(const char* path, engine_t* engine, scene_t* scene) 
 	scene_init(scene);
 
 	tscn_ext_resource_t ext_resources[NB_TSCN_MAX_EXT_RESOURCES];
-	tscn_sub_resource_t sub_resources[NB_TSCN_MAX_SUB_RESOURCES];
 	tscn_node_t nodes[NB_TSCN_MAX_NODES];
 	int ext_count = 0;
-	int sub_count = 0;
 	int node_count = 0;
 	nb_result_t result = NB_RESULT_OK;
 	tscn_section_t section = TSCN_SECTION_HEADER;
 	char line[NB_TSCN_LINE_CAPACITY];
 
 	memset(ext_resources, 0, sizeof(ext_resources));
-	memset(sub_resources, 0, sizeof(sub_resources));
 	memset(nodes, 0, sizeof(nodes));
 
 	while (fgets(line, sizeof(line), file)) {
@@ -571,19 +463,7 @@ nb_result_t scene_load_tscn(const char* path, engine_t* engine, scene_t* scene) 
 			}
 
 			else if (strncmp(text, "[sub_resource", 13) == 0) {
-				section = TSCN_SECTION_SUB;
-
-				if (sub_count >= NB_TSCN_MAX_SUB_RESOURCES) {
-					result = NB_RESULT_ERROR_RESOURCE;
-					break;
-				}
-
-				tscn_sub_resource_t* resource = &sub_resources[sub_count++];
-				memset(resource, 0, sizeof(*resource));
-				strcpy(resource->blend_mode, "none");
-				strcpy(resource->shade_mode, "gouraud");
-				tscn_header_value(text, "id", resource->id, sizeof(resource->id));
-				tscn_header_value(text, "type", resource->type, sizeof(resource->type));
+				section = TSCN_SECTION_OTHER;
 			}
 
 			else if (strncmp(text, "[node", 5) == 0) {
@@ -624,28 +504,6 @@ nb_result_t scene_load_tscn(const char* path, engine_t* engine, scene_t* scene) 
 		}
 
 		if (section == TSCN_SECTION_EXT) {
-			continue;
-		}
-
-		if (section == TSCN_SECTION_SUB && sub_count > 0) {
-			tscn_sub_resource_t* resource = &sub_resources[sub_count - 1];
-
-			if (strcmp(key, "texture") == 0) {
-				tscn_parse_reference(value, resource->texture_id, sizeof(resource->texture_id));
-			}
-
-			else if (strcmp(key, "palette") == 0) {
-				tscn_parse_reference(value, resource->palette_id, sizeof(resource->palette_id));
-			}
-
-			else if (strcmp(key, "blend_mode") == 0) {
-				tscn_parse_value(value, resource->blend_mode, sizeof(resource->blend_mode));
-			}
-
-			else if (strcmp(key, "shade_mode") == 0) {
-				tscn_parse_value(value, resource->shade_mode, sizeof(resource->shade_mode));
-			}
-
 			continue;
 		}
 
@@ -712,11 +570,7 @@ nb_result_t scene_load_tscn(const char* path, engine_t* engine, scene_t* scene) 
 
 	fclose(file);
 
-	if (result == NB_RESULT_OK && !tscn_build_materials(engine, scene, sub_resources, sub_count, ext_resources, ext_count)) {
-		result = NB_RESULT_ERROR_RESOURCE;
-	}
-
-	if (result == NB_RESULT_OK && !tscn_create_entities(scene, nodes, node_count, ext_resources, ext_count, sub_resources, sub_count)) {
+	if (result == NB_RESULT_OK && !tscn_create_entities(scene, nodes, node_count, ext_resources, ext_count)) {
 		result = NB_RESULT_ERROR_SCENE;
 	}
 

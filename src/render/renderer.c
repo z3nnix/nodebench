@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "render/renderer.h"
 
@@ -175,6 +176,7 @@ int renderer_init(renderer_t* renderer, framebuffer_t* framebuffer) {
 	renderer->triangles = NULL;
 	renderer->projected_capacity = 0;
 	renderer->triangle_capacity = 0;
+	renderer->command_count = 0;
 
 	mat4_identity(&renderer->view);
 	mat4_identity(&renderer->view_projection);
@@ -196,17 +198,29 @@ void renderer_shutdown(renderer_t* renderer) {
 	renderer->triangles = NULL;
 	renderer->projected_capacity = 0;
 	renderer->triangle_capacity = 0;
+	renderer->command_count = 0;
 }
 
-void renderer_set_camera(renderer_t* renderer, const mat4_t* view, const mat4_t* projection) {
-	if (!renderer || !view || !projection) { return; }
+void renderer_submit(renderer_t* renderer, const draw_list_t* list) {
+	if (!renderer || !list) { return; }
 
-	renderer->view = *view;
-	mat4_multiply(&renderer->view_projection, projection, view);
+	renderer->view = list->view;
+	renderer->view_projection = list->view_projection;
+	renderer->command_count = list->count;
+
+	if (renderer->command_count > NB_DRAW_LIST_MAX_COMMANDS) {
+		renderer->command_count = NB_DRAW_LIST_MAX_COMMANDS;
+	}
+
+	memcpy(renderer->commands, list->commands, (size_t)renderer->command_count * sizeof(draw_command_t));
 }
 
-void renderer_draw_mesh(renderer_t* renderer, const mesh_t* mesh, const texture_t* texture, const mat4_t* model, nb_blend_mode_t blend_mode) {
-	if (!renderer || !renderer->framebuffer || !mesh || !mesh->vertices || !mesh->triangles) { return; }
+static void renderer_draw_command(renderer_t* renderer, const draw_command_t* command) {
+	if (!renderer || !renderer->framebuffer || !command) { return; }
+
+	const mesh_t* mesh = command->mesh;
+	const material_t* material = command->material;
+	if (!mesh || !mesh->vertices || !mesh->triangles || !material) { return; }
 	if (!renderer_reserve(renderer, mesh->vertex_count, mesh->triangle_count)) { return; }
 
 	const render_config_t* config = renderer->config;
@@ -215,10 +229,7 @@ void renderer_draw_mesh(renderer_t* renderer, const mesh_t* mesh, const texture_
 	float snap_step_x = config->snap_grid_width > 0 ? (float)width / (float)config->snap_grid_width : 1.0f;
 	float snap_step_y = config->snap_grid_height > 0 ? (float)height / (float)config->snap_grid_height : 1.0f;
 
-	mat4_t local_model;
-	if (model) { local_model = *model; }
-
-	else { mat4_identity(&local_model); }
+	mat4_t local_model = command->model;
 
 	vec3_t light = vec3_normalize((vec3_t){ config->light_direction[0], config->light_direction[1], config->light_direction[2] });
 
@@ -241,14 +252,14 @@ void renderer_draw_mesh(renderer_t* renderer, const mesh_t* mesh, const texture_
 		int color_b = 0;
 
 		rgb555_unpack(vertex->color, &color_r, &color_g, &color_b);
-		projected->r = (float)color_r;
-		projected->g = (float)color_g;
-		projected->b = (float)color_b;
+		projected->r = (float)color_r * material->vertex_color_tint.x;
+		projected->g = (float)color_g * material->vertex_color_tint.y;
+		projected->b = (float)color_b * material->vertex_color_tint.z;
 
 		float distance = -view4.z;
 		float fog = 0.0f;
 
-		if (config->fog_enabled && config->fog_far != config->fog_near) { fog = (distance - config->fog_near) / (config->fog_far - config->fog_near); }
+		if (config->fog_enabled && material->fog_enabled && config->fog_far != config->fog_near) { fog = (distance - config->fog_near) / (config->fog_far - config->fog_near); }
 		projected->fog = clamp01(fog);
 
 		renderer->world[i] = (vec3_t){ world4.x, world4.y, world4.z };
@@ -297,7 +308,7 @@ void renderer_draw_mesh(renderer_t* renderer, const mesh_t* mesh, const texture_
 		if (facing < 0.0f) { facing = 0.0f; }
 		float intensity = 0.35f + 0.65f * facing;
 
-		if (config->shade_mode == NB_SHADE_FLAT) {
+		if (material->shade_mode == NB_SHADE_FLAT) {
 			v1.r = v0.r;
 			v1.g = v0.g;
 			v1.b = v0.b;
@@ -326,5 +337,15 @@ void renderer_draw_mesh(renderer_t* renderer, const mesh_t* mesh, const texture_
 
 	if (triangle_count > 1) { qsort(renderer->triangles, (size_t)triangle_count, sizeof(projected_triangle_t), triangle_compare); }
 
-	for (int i = 0; i < triangle_count; i++) { rasterize_triangle(renderer, &renderer->triangles[i], texture, blend_mode); }
+	for (int i = 0; i < triangle_count; i++) { rasterize_triangle(renderer, &renderer->triangles[i], command->texture, material->blend_mode); }
+}
+
+void renderer_flush(renderer_t* renderer) {
+	if (!renderer) {
+		return;
+	}
+
+	for (int i = 0; i < renderer->command_count; i++) {
+		renderer_draw_command(renderer, &renderer->commands[i]);
+	}
 }

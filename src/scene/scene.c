@@ -1,7 +1,6 @@
 #include "scene/scene.h"
 
 #include <stddef.h>
-#include <stdlib.h>
 #include <string.h>
 
 static int scene_entity_exists(const scene_t* scene, entity_id_t id) {
@@ -41,22 +40,7 @@ void scene_shutdown(scene_t* scene) {
 		return;
 	}
 
-	for (int i = 0; i < scene->owned_count; i++) {
-		free(scene->owned[i]);
-	}
-
 	memset(scene, 0, sizeof(*scene));
-}
-
-int scene_own(scene_t* scene, void* pointer) {
-	if (!scene || !pointer || scene->owned_count >= NB_SCENE_MAX_OWNED) {
-		return 0;
-	}
-
-	scene->owned[scene->owned_count] = pointer;
-	scene->owned_count++;
-
-	return 1;
 }
 
 entity_id_t scene_create_entity(scene_t* scene) {

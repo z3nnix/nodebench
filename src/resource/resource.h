@@ -1,26 +1,14 @@
 #ifndef NB_RESOURCE_RESOURCE_H
 #define NB_RESOURCE_RESOURCE_H
 
-#include <stdint.h>
-
-#include "core/config.h"
+#include "render/material.h"
 #include "render/mesh.h"
 #include "render/texture.h"
+#include "resource/resource_id.h"
 
-#define NB_RESOURCE_INVALID_ID 0u
 #define NB_RESOURCE_MAX_MESHES 64
 #define NB_RESOURCE_MAX_TEXTURES 64
 #define NB_RESOURCE_MAX_MATERIALS 64
-
-typedef uint32_t mesh_id;
-typedef uint32_t texture_id;
-typedef uint32_t material_id;
-
-typedef struct {
-	nb_blend_mode_t blend_mode;
-	nb_shade_mode_t shade_mode;
-	texture_id texture;
-} material_t;
 
 typedef struct {
 	uint32_t generation;

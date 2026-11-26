@@ -6,7 +6,6 @@
 
 #define NB_ENTITY_INVALID 0
 #define NB_SCENE_MAX_ENTITIES 256
-#define NB_SCENE_MAX_OWNED 64
 
 typedef uint32_t entity_id_t;
 
@@ -62,14 +61,10 @@ typedef struct
 	light_t lights[NB_SCENE_MAX_ENTITIES];
 	entity_id_t light_entities[NB_SCENE_MAX_ENTITIES];
 	int light_count;
-
-	void* owned[NB_SCENE_MAX_OWNED];
-	int owned_count;
 } scene_t;
 
 void scene_init(scene_t* scene);
 void scene_shutdown(scene_t* scene);
-int scene_own(scene_t* scene, void* pointer);
 entity_id_t scene_create_entity(scene_t* scene);
 
 int scene_add_transform(scene_t* scene, entity_id_t id, transform_t transform);
