@@ -34,6 +34,13 @@ static void resource_free_texture(texture_t* texture) {
 	free(texture);
 }
 
+static void resource_free_audio(audio_stream_t* stream) {
+	if (!stream) { return; }
+
+	free(stream->samples);
+	free(stream);
+}
+
 static int resource_is_pot(int value) {
 	return value > 0 && (value & (value - 1)) == 0;
 }
@@ -105,6 +112,26 @@ void resource_store_shutdown(resource_store_t* store) {
 		if (slot->material) {
 			free(slot->material);
 			slot->material = NULL;
+			slot->generation++;
+			if (slot->generation == 0) { slot->generation = 1; }
+		}
+	}
+
+	for (int i = 0; i < NB_RESOURCE_MAX_SCRIPTS; i++) {
+		script_slot_t* slot = &store->scripts[i];
+		if (slot->source) {
+			free(slot->source);
+			slot->source = NULL;
+			slot->generation++;
+			if (slot->generation == 0) { slot->generation = 1; }
+		}
+	}
+
+	for (int i = 0; i < NB_RESOURCE_MAX_AUDIO; i++) {
+		audio_slot_t* slot = &store->audio[i];
+		if (slot->stream) {
+			resource_free_audio(slot->stream);
+			slot->stream = NULL;
 			slot->generation++;
 			if (slot->generation == 0) { slot->generation = 1; }
 		}
@@ -223,6 +250,69 @@ material_id resource_add_material(resource_store_t* store, const material_t* mat
 	return NB_RESOURCE_INVALID_ID;
 }
 
+script_id resource_add_script(resource_store_t* store, const char* source) {
+	if (!store || !source) { return NB_RESOURCE_INVALID_ID; }
+
+	for (int i = 0; i < NB_RESOURCE_MAX_SCRIPTS; i++) {
+		script_slot_t* slot = &store->scripts[i];
+		if (slot->source) { continue; }
+
+		size_t length = strlen(source) + 1;
+		char* copy = (char*)malloc(length);
+		if (!copy) { return NB_RESOURCE_INVALID_ID; }
+
+		memcpy(copy, source, length);
+		slot->generation++;
+		if (slot->generation == 0) { slot->generation = 1; }
+		slot->source = copy;
+
+		return resource_make_id(i, slot->generation);
+	}
+
+	return NB_RESOURCE_INVALID_ID;
+}
+
+audio_id resource_add_audio(resource_store_t* store, const audio_stream_t* stream, const char* name) {
+	if (!store || !stream || !stream->samples || stream->frame_count <= 0 || stream->sample_rate == 0 || (stream->channels != 1 && stream->channels != 2) || !name || !*name) {
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	if (strlen(name) >= NB_AUDIO_MAX_NAME) {
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	for (int i = 0; i < NB_RESOURCE_MAX_AUDIO; i++) {
+		audio_slot_t* slot = &store->audio[i];
+		if (slot->stream) { continue; }
+
+		size_t bytes = (size_t)stream->frame_count * (size_t)stream->channels * sizeof(int16_t);
+		audio_stream_t* copy = (audio_stream_t*)malloc(sizeof(audio_stream_t));
+		if (!copy) {
+			return NB_RESOURCE_INVALID_ID;
+		}
+
+		copy->samples = (int16_t*)malloc(bytes);
+		if (!copy->samples) {
+			free(copy);
+			return NB_RESOURCE_INVALID_ID;
+		}
+
+		memcpy(copy->samples, stream->samples, bytes);
+		copy->sample_rate = stream->sample_rate;
+		copy->channels = stream->channels;
+		copy->frame_count = stream->frame_count;
+
+		slot->generation++;
+		if (slot->generation == 0) { slot->generation = 1; }
+		slot->stream = copy;
+		snprintf(slot->name, sizeof(slot->name), "%s", name);
+
+		return resource_make_id(i, slot->generation);
+	}
+
+	return NB_RESOURCE_INVALID_ID;
+}
+
 mesh_t* resource_get_mesh(resource_store_t* store, mesh_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
@@ -268,6 +358,49 @@ material_t* resource_get_material(resource_store_t* store, material_id id) {
 	return slot->material;
 }
 
+const char* resource_get_script(resource_store_t* store, script_id id) {
+	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
+
+	int index = resource_index(id);
+	assert(index >= 0 && index < NB_RESOURCE_MAX_SCRIPTS);
+
+	if (index < 0 || index >= NB_RESOURCE_MAX_SCRIPTS) { return NULL; }
+
+	script_slot_t* slot = &store->scripts[index];
+	assert(slot->generation != 0);
+	if (!slot->source || slot->generation != resource_generation(id)) { return NULL; }
+
+	return slot->source;
+}
+
+audio_stream_t* resource_get_audio(resource_store_t* store, audio_id id) {
+	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
+
+	int index = resource_index(id);
+	assert(index >= 0 && index < NB_RESOURCE_MAX_AUDIO);
+
+	if (index < 0 || index >= NB_RESOURCE_MAX_AUDIO) { return NULL; }
+
+	audio_slot_t* slot = &store->audio[index];
+	assert(slot->generation != 0);
+	if (!slot->stream || slot->generation != resource_generation(id)) { return NULL; }
+
+	return slot->stream;
+}
+
+audio_id resource_find_audio(resource_store_t* store, const char* name) {
+	if (!store || !name || !*name) { return NB_RESOURCE_INVALID_ID; }
+
+	for (int i = 0; i < NB_RESOURCE_MAX_AUDIO; i++) {
+		audio_slot_t* slot = &store->audio[i];
+		if (slot->stream && strcmp(slot->name, name) == 0) {
+			return resource_make_id(i, slot->generation);
+		}
+	}
+
+	return NB_RESOURCE_INVALID_ID;
+}
+
 void resource_remove_mesh(resource_store_t* store, mesh_id id) {
 	mesh_t* mesh = resource_get_mesh(store, id);
 	if (!mesh) { return; }
@@ -309,6 +442,32 @@ void resource_remove_material(resource_store_t* store, material_id id) {
 
 	free(material);
 	slot->material = NULL;
+	slot->generation++;
+	if (slot->generation == 0) { slot->generation = 1; }
+}
+
+void resource_remove_script(resource_store_t* store, script_id id) {
+	const char* source = resource_get_script(store, id);
+	if (!source) { return; }
+
+	int index = resource_index(id);
+	script_slot_t* slot = &store->scripts[index];
+
+	free((void*)source);
+	slot->source = NULL;
+	slot->generation++;
+	if (slot->generation == 0) { slot->generation = 1; }
+}
+
+void resource_remove_audio(resource_store_t* store, audio_id id) {
+	audio_stream_t* stream = resource_get_audio(store, id);
+	if (!stream) { return; }
+
+	int index = resource_index(id);
+	audio_slot_t* slot = &store->audio[index];
+
+	resource_free_audio(stream);
+	slot->stream = NULL;
 	slot->generation++;
 	if (slot->generation == 0) { slot->generation = 1; }
 }

@@ -6,8 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio/audio.h"
 #include "resource/loader.h"
 #include "resource/loader_tres.h"
+#include "script/script.h"
 
 #define NB_TSCN_MAX_EXT_RESOURCES 64
 #define NB_TSCN_MAX_NODES 256
@@ -41,9 +43,19 @@ typedef struct {
 	char mesh_ref[64];
 	int material_ref_kind;
 	char material_ref[64];
+	int script_ref_kind;
+	char script_ref[64];
 	camera_t camera;
 	light_t light;
+	collider_t collider;
+	int has_collider;
 } tscn_node_t;
+
+static void tscn_init_collider(collider_t* collider) {
+	collider->shape = NB_COLLIDER_AABB;
+	collider->extents = (vec3_t){ 0.5f, 0.5f, 0.5f };
+	collider->radius = 0.5f;
+}
 
 static char* tscn_trim(char* text) {
 	char* start = text;
@@ -320,6 +332,30 @@ static int tscn_load_ext_resource(engine_t* engine, tscn_ext_resource_t* resourc
 		return resource->handle != NB_RESOURCE_INVALID_ID;
 	}
 
+	if (strcmp(resource->type, "WrenScript") == 0 || strcmp(resource->type, "Script") == 0) {
+		char* source = script_load_file(path);
+		if (!source) {
+			return 0;
+		}
+
+		resource->handle = resource_add_script(&engine->resources, source);
+		free(source);
+
+		return resource->handle != NB_RESOURCE_INVALID_ID;
+	}
+
+	if (strcmp(resource->type, "AudioStreamWAV") == 0 || strcmp(resource->type, "AudioStream") == 0) {
+		audio_stream_t stream;
+		if (!wav_load(path, &stream)) {
+			return 0;
+		}
+
+		resource->handle = resource_add_audio(&engine->resources, &stream, resource->id);
+		audio_stream_free(&stream);
+
+		return resource->handle != NB_RESOURCE_INVALID_ID;
+	}
+
 	return 1;
 }
 
@@ -336,10 +372,29 @@ static void tscn_free_ext_resources(tscn_ext_resource_t* resources, int count) {
 }
 
 static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, tscn_ext_resource_t* ext_resources, int ext_count) {
+	entity_id_t ids[NB_TSCN_MAX_NODES];
+
 	for (int i = 0; i < count; i++) {
 		tscn_node_t* node = &nodes[i];
 		entity_id_t id = scene_create_entity(scene);
 		if (id == NB_ENTITY_INVALID) {
+			return 0;
+		}
+
+		ids[i] = id;
+
+		if (!scene_set_node_name(scene, id, node->name)) {
+			return 0;
+		}
+
+		if (node->script_ref_kind == 1) {
+			tscn_ext_resource_t* script_resource = tscn_find_ext(ext_resources, ext_count, node->script_ref);
+			if (!script_resource || script_resource->handle == NB_RESOURCE_INVALID_ID || !scene_add_script(scene, id, script_resource->handle, node->name)) {
+				return 0;
+			}
+		}
+
+		if (node->has_collider && !scene_add_collider(scene, id, node->collider)) {
 			return 0;
 		}
 
@@ -398,6 +453,21 @@ static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, t
 			return 0;
 		}
 	}
+
+	for (int i = 0; i < count; i++) {
+		tscn_node_t* node = &nodes[i];
+		if (!node->parent[0] || strcmp(node->parent, ".") == 0) {
+			continue;
+		}
+
+		entity_id_t parent = scene_find_node(scene, node->parent);
+		if (parent == NB_ENTITY_INVALID || !scene_set_node_parent(scene, ids[i], parent)) {
+			return 0;
+		}
+	}
+
+	scene_update_world_transforms(scene);
+	scene_rebuild_cache(scene);
 
 	return 1;
 }
@@ -476,6 +546,7 @@ nb_result_t scene_load_tscn(const char* path, engine_t* engine, scene_t* scene) 
 
 				tscn_node_t* node = &nodes[node_count++];
 				memset(node, 0, sizeof(*node));
+				tscn_init_collider(&node->collider);
 				node->transform.scale.x = 1.0f;
 				node->transform.scale.y = 1.0f;
 				node->transform.scale.z = 1.0f;
@@ -528,6 +599,35 @@ nb_result_t scene_load_tscn(const char* path, engine_t* engine, scene_t* scene) 
 
 			else if (strcmp(key, "material") == 0) {
 				node->material_ref_kind = tscn_parse_reference(value, node->material_ref, sizeof(node->material_ref));
+			}
+
+			else if (strcmp(key, "script") == 0) {
+				node->script_ref_kind = tscn_parse_reference(value, node->script_ref, sizeof(node->script_ref));
+			}
+
+			else if (strcmp(key, "collider_shape") == 0) {
+				char shape[32];
+				tscn_parse_value(value, shape, sizeof(shape));
+				if (strcmp(shape, "sphere") == 0) {
+					node->collider.shape = NB_COLLIDER_SPHERE;
+				}
+
+				else if (strcmp(shape, "aabb") == 0) {
+					node->collider.shape = NB_COLLIDER_AABB;
+				}
+
+				node->has_collider = node->collider.shape == NB_COLLIDER_SPHERE || node->collider.shape == NB_COLLIDER_AABB;
+			}
+
+			else if (strcmp(key, "collider_extents") == 0) {
+				if (tscn_parse_vector3(value, &node->collider.extents)) {
+					node->has_collider = 1;
+				}
+			}
+
+			else if (strcmp(key, "collider_radius") == 0) {
+				node->collider.radius = strtof(value, NULL);
+				node->has_collider = node->collider.radius > 0.0f;
 			}
 
 			else if (strcmp(key, "fov") == 0) {

@@ -25,13 +25,6 @@ typedef struct {
 	int logged;
 } demo_scene_t;
 
-static void demo_scale_matrix(mat4_t* out, vec3_t scale) {
-	mat4_identity(out);
-	out->m[0] = scale.x;
-	out->m[5] = scale.y;
-	out->m[10] = scale.z;
-}
-
 static camera_t demo_make_camera(engine_t* engine, const scene_t* scene) {
 	camera_t camera;
 
@@ -100,12 +93,35 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 		return result;
 	}
 
+	engine->scene_graph = &runtime->scene;
+	wren_vm_bind_scene(&engine->script_vm, &runtime->scene);
+	int scripts = 0;
+	for (int i = 0; i < runtime->scene.node_count; i++) {
+		node_t* node = &runtime->scene.nodes[i];
+		if (!(node->components & NB_NODE_COMPONENT_SCRIPT)) {
+			continue;
+		}
+
+		const char* source = resource_get_script(&engine->resources, node->script);
+		if (!source || !wren_vm_attach(&engine->script_vm, node->id, node->script_module, source)) {
+			engine_log(engine, "failed to attach script to node=%s", node->name);
+			scene_shutdown(&runtime->scene);
+			free(runtime);
+
+			return NB_RESULT_ERROR_SCENE;
+		}
+
+		scripts++;
+	}
+
+	wren_vm_init_instances(&engine->script_vm);
+
 	demo_configure_light(engine, &runtime->scene);
 	runtime->camera = demo_make_camera(engine, &runtime->scene);
 	camera_controller_init(&runtime->camera_controller, &runtime->camera);
 	*context = runtime;
 
-	engine_log(engine, "loaded scene=%s entities=%d meshes=%d cameras=%d lights=%d vram=%d", NB_DEMO_SCENE_PATH, runtime->scene.entity_count, runtime->scene.mesh_renderer_count, runtime->scene.camera_count, runtime->scene.light_count, resource_vram_used(&engine->resources));
+	engine_log(engine, "loaded scene=%s entities=%d meshes=%d cameras=%d lights=%d scripts=%d vram=%d", NB_DEMO_SCENE_PATH, runtime->scene.entity_count, runtime->scene.mesh_renderer_count, runtime->scene.camera_count, runtime->scene.light_count, scripts, resource_vram_used(&engine->resources));
 
 	return NB_RESULT_OK;
 }
@@ -124,12 +140,19 @@ static void demo_scene_update(engine_t* engine, void* context, float dt) {
 
 	if (!engine->paused) {
 		scene_t* scene = &runtime->scene;
-		for (int i = 0; i < scene->transform_count; i++) {
-			transform_t* transform = &scene->transforms[i];
-			transform->previous_rotation = transform->rotation;
-			transform->rotation.y += dt * transform->spin_speed;
-			transform->rotation.x += dt * transform->spin_speed * 0.6f;
+		for (int i = 0; i < scene->node_count; i++) {
+			node_t* node = &scene->nodes[i];
+			if (!(node->components & NB_NODE_COMPONENT_TRANSFORM) || (node->components & NB_NODE_COMPONENT_SCRIPT)) {
+				continue;
+			}
+
+			node->transform.previous_rotation = node->transform.rotation;
+			node->transform.rotation.y += dt * node->transform.spin_speed;
+			node->transform.rotation.x += dt * node->transform.spin_speed * 0.6f;
 		}
+
+		scene_update_world_transforms(scene);
+		scene_rebuild_cache(scene);
 	}
 
 	camera_controller_update(&runtime->camera_controller, &runtime->camera, &engine->input, dt);
@@ -162,12 +185,12 @@ static void demo_scene_render(engine_t* engine, void* context, float alpha) {
 	for (int i = 0; i < scene->mesh_renderer_count; i++) {
 		entity_id_t id = scene->mesh_renderer_entities[i];
 		mesh_renderer_t* renderer_component = &scene->mesh_renderers[i];
-		transform_t* transform = scene_get_transform(scene, id);
+		node_t* node = scene_get_node(scene, id);
 		mesh_t* mesh = resource_get_mesh(&engine->resources, renderer_component->mesh);
 		material_t* material = resource_get_material(&engine->resources, renderer_component->material);
 		texture_t* texture = NULL;
 
-		if (!transform || !mesh || !material) {
+		if (!node || !(node->components & NB_NODE_COMPONENT_TRANSFORM) || !mesh || !material) {
 			continue;
 		}
 
@@ -176,24 +199,10 @@ static void demo_scene_render(engine_t* engine, void* context, float alpha) {
 			continue;
 		}
 
-		vec3_t rotation;
-		rotation.x = transform->previous_rotation.x + (transform->rotation.x - transform->previous_rotation.x) * alpha;
-		rotation.y = transform->previous_rotation.y + (transform->rotation.y - transform->previous_rotation.y) * alpha;
-		rotation.z = transform->previous_rotation.z + (transform->rotation.z - transform->previous_rotation.z) * alpha;
-
-		mat4_t translation;
-		mat4_t rotation_x;
-		mat4_t rotation_y;
-		mat4_t scale;
 		mat4_t model;
-
-		mat4_translate(&translation, transform->position.x, transform->position.y, transform->position.z);
-		mat4_rotate_y(&rotation_y, rotation.y);
-		mat4_rotate_x(&rotation_x, rotation.x);
-		demo_scale_matrix(&scale, transform->scale);
-		mat4_multiply(&model, &translation, &rotation_y);
-		mat4_multiply(&model, &model, &rotation_x);
-		mat4_multiply(&model, &model, &scale);
+		for (int j = 0; j < 16; j++) {
+			model.m[j] = node->previous_world_matrix.m[j] + (node->world_matrix.m[j] - node->previous_world_matrix.m[j]) * alpha;
+		}
 
 		draw_list_push(list, mesh, texture, material, &model);
 	}
@@ -215,11 +224,19 @@ static void demo_scene_reset(engine_t* engine, void* context) {
 	}
 
 	scene_t* scene = &runtime->scene;
-	for (int i = 0; i < scene->transform_count; i++) {
-		transform_t* transform = &scene->transforms[i];
-		transform->rotation = transform->initial_rotation;
-		transform->previous_rotation = transform->initial_rotation;
+	for (int i = 0; i < scene->node_count; i++) {
+		node_t* node = &scene->nodes[i];
+		if (!(node->components & NB_NODE_COMPONENT_TRANSFORM)) {
+			continue;
+		}
+
+		node->transform.rotation = node->transform.initial_rotation;
+		node->transform.previous_rotation = node->transform.initial_rotation;
 	}
+
+	scene_update_world_transforms(scene);
+	scene_rebuild_cache(scene);
+	wren_vm_init_instances(&engine->script_vm);
 
 	runtime->camera = demo_make_camera(engine, scene);
 	camera_controller_reset(&runtime->camera_controller, &runtime->camera);

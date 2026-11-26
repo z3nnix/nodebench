@@ -1,20 +1,21 @@
 #include "scene/scene.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
-static int scene_entity_exists(const scene_t* scene, entity_id_t id) {
+static node_t* scene_get_node_internal(scene_t* scene, entity_id_t id) {
 	if (!scene || id == NB_ENTITY_INVALID) {
-		return 0;
+		return NULL;
 	}
 
-	for (int i = 0; i < scene->entity_count; i++) {
-		if (scene->ids[i] == id) {
-			return 1;
+	for (int i = 0; i < scene->node_count; i++) {
+		if (scene->nodes[i].id == id) {
+			return &scene->nodes[i];
 		}
 	}
 
-	return 0;
+	return NULL;
 }
 
 static int scene_find_component(const entity_id_t* ids, int count, entity_id_t id) {
@@ -25,6 +26,45 @@ static int scene_find_component(const entity_id_t* ids, int count, entity_id_t i
 	}
 
 	return -1;
+}
+
+static void scene_node_local_matrix(const node_t* node, mat4_t* out) {
+	mat4_t translation;
+	mat4_t rotate_y;
+	mat4_t rotate_x;
+	mat4_t scale;
+
+	mat4_translate(&translation, node->transform.position.x, node->transform.position.y, node->transform.position.z);
+	mat4_rotate_y(&rotate_y, node->transform.rotation.y);
+	mat4_rotate_x(&rotate_x, node->transform.rotation.x);
+	mat4_identity(&scale);
+	scale.m[0] = node->transform.scale.x;
+	scale.m[5] = node->transform.scale.y;
+	scale.m[10] = node->transform.scale.z;
+
+	mat4_multiply(out, &translation, &rotate_y);
+	mat4_multiply(out, out, &rotate_x);
+	mat4_multiply(out, out, &scale);
+}
+
+static void scene_detach_parent(scene_t* scene, node_t* node) {
+	node_t* parent = scene_get_node_internal(scene, node->parent);
+	if (!parent) {
+		return;
+	}
+
+	for (int i = 0; i < parent->child_count; i++) {
+		if (parent->children[i] != node->id) {
+			continue;
+		}
+
+		for (int j = i + 1; j < parent->child_count; j++) {
+			parent->children[j - 1] = parent->children[j];
+		}
+
+		parent->child_count--;
+		break;
+	}
 }
 
 void scene_init(scene_t* scene) {
@@ -44,62 +84,336 @@ void scene_shutdown(scene_t* scene) {
 }
 
 entity_id_t scene_create_entity(scene_t* scene) {
-	if (!scene || scene->entity_count >= NB_SCENE_MAX_ENTITIES) {
+	if (!scene || scene->node_count >= NB_SCENE_MAX_ENTITIES || scene->entity_count >= NB_SCENE_MAX_ENTITIES) {
 		return NB_ENTITY_INVALID;
 	}
 
-	scene->ids[scene->entity_count] = (entity_id_t)(scene->entity_count + 1);
+	entity_id_t id = (entity_id_t)(scene->entity_count + 1);
+	node_t* node = &scene->nodes[scene->node_count];
+	memset(node, 0, sizeof(*node));
+
+	node->id = id;
+	node->parent = NB_ENTITY_INVALID;
+	node->transform.scale = (vec3_t){ 1.0f, 1.0f, 1.0f };
+	snprintf(node->name, sizeof(node->name), "Node%d", id);
+	mat4_identity(&node->world_matrix);
+	mat4_identity(&node->previous_world_matrix);
+	scene->node_count++;
+
+	scene->ids[scene->entity_count] = id;
 	scene->entity_count++;
 
-	return scene->ids[scene->entity_count - 1];
+	return id;
+}
+
+node_t* scene_get_node(scene_t* scene, entity_id_t id) {
+	return scene_get_node_internal(scene, id);
+}
+
+entity_id_t scene_find_node(scene_t* scene, const char* name) {
+	if (!scene || !name || !*name) {
+		return NB_ENTITY_INVALID;
+	}
+
+	for (int i = 0; i < scene->node_count; i++) {
+		if (strcmp(scene->nodes[i].name, name) == 0) {
+			return scene->nodes[i].id;
+		}
+	}
+
+	return NB_ENTITY_INVALID;
+}
+
+entity_id_t scene_find_node_path(scene_t* scene, const char* path) {
+	if (!scene || !path || !*path) {
+		return NB_ENTITY_INVALID;
+	}
+
+	char buffer[256];
+	if (strlen(path) >= sizeof(buffer)) {
+		return NB_ENTITY_INVALID;
+	}
+
+	strcpy(buffer, path);
+	char* token = strtok(buffer, "/");
+	if (!token) {
+		return NB_ENTITY_INVALID;
+	}
+
+	entity_id_t id = scene_find_node(scene, token);
+	if (id == NB_ENTITY_INVALID) {
+		return NB_ENTITY_INVALID;
+	}
+
+	token = strtok(NULL, "/");
+	while (token) {
+		node_t* node = scene_get_node_internal(scene, id);
+		if (!node) {
+			return NB_ENTITY_INVALID;
+		}
+
+		entity_id_t child = NB_ENTITY_INVALID;
+		for (int i = 0; i < node->child_count; i++) {
+			node_t* candidate = scene_get_node_internal(scene, node->children[i]);
+			if (candidate && strcmp(candidate->name, token) == 0) {
+				child = candidate->id;
+				break;
+			}
+		}
+
+		if (child == NB_ENTITY_INVALID) {
+			return NB_ENTITY_INVALID;
+		}
+
+		id = child;
+		token = strtok(NULL, "/");
+	}
+
+	return id;
+}
+
+int scene_set_node_name(scene_t* scene, entity_id_t id, const char* name) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node || !name || !*name || strlen(name) >= sizeof(node->name)) {
+		return 0;
+	}
+
+	if (scene_find_node(scene, name) != NB_ENTITY_INVALID) {
+		return 0;
+	}
+
+	snprintf(node->name, sizeof(node->name), "%s", name);
+	return 1;
+}
+
+int scene_set_node_parent(scene_t* scene, entity_id_t id, entity_id_t parent) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node || parent == id) {
+		return 0;
+	}
+
+	entity_id_t current = parent;
+	while (current != NB_ENTITY_INVALID) {
+		if (current == id) {
+			return 0;
+		}
+
+		node_t* ancestor = scene_get_node_internal(scene, current);
+		if (!ancestor) {
+			return 0;
+		}
+
+		current = ancestor->parent;
+	}
+
+	scene_detach_parent(scene, node);
+	node->parent = NB_ENTITY_INVALID;
+
+	if (parent == NB_ENTITY_INVALID) {
+		return 1;
+	}
+
+	node_t* parent_node = scene_get_node_internal(scene, parent);
+	if (!parent_node || parent_node->child_count >= NB_NODE_MAX_CHILDREN) {
+		return 0;
+	}
+
+	parent_node->children[parent_node->child_count++] = id;
+	node->parent = parent;
+
+	return 1;
+}
+
+void scene_update_world_transforms(scene_t* scene) {
+	if (!scene) {
+		return;
+	}
+
+	unsigned char updated[NB_SCENE_MAX_ENTITIES];
+	memset(updated, 0, sizeof(updated));
+
+	for (int pass = 0; pass < scene->node_count; pass++) {
+		for (int i = 0; i < scene->node_count; i++) {
+			if (updated[i]) {
+				continue;
+			}
+
+			node_t* node = &scene->nodes[i];
+			int parent_ready = node->parent == NB_ENTITY_INVALID;
+
+			if (!parent_ready) {
+				for (int j = 0; j < scene->node_count; j++) {
+					if (scene->nodes[j].id == node->parent && updated[j]) {
+						parent_ready = 1;
+						break;
+					}
+				}
+			}
+
+			if (!parent_ready) {
+				continue;
+			}
+
+			mat4_t local;
+			scene_node_local_matrix(node, &local);
+			node->previous_world_matrix = node->world_matrix;
+
+			if (node->parent == NB_ENTITY_INVALID) {
+				node->world_matrix = local;
+			}
+
+			else {
+				node_t* parent = scene_get_node_internal(scene, node->parent);
+				if (!parent) {
+					node->world_matrix = local;
+				}
+
+				else {
+					mat4_multiply(&node->world_matrix, &parent->world_matrix, &local);
+				}
+			}
+
+			node->world_position = (vec3_t){ node->world_matrix.m[12], node->world_matrix.m[13], node->world_matrix.m[14] };
+			updated[i] = 1;
+		}
+	}
+}
+
+void scene_rebuild_cache(scene_t* scene) {
+	if (!scene) {
+		return;
+	}
+
+	scene->transform_count = 0;
+	scene->mesh_renderer_count = 0;
+	scene->camera_count = 0;
+	scene->light_count = 0;
+	scene->collider_count = 0;
+
+	for (int i = 0; i < scene->node_count; i++) {
+		node_t* node = &scene->nodes[i];
+
+		if (node->components & NB_NODE_COMPONENT_TRANSFORM) {
+			scene->transforms[scene->transform_count] = node->transform;
+			scene->transform_entities[scene->transform_count] = node->id;
+			scene->transform_count++;
+		}
+
+		if (node->components & NB_NODE_COMPONENT_MESH_RENDERER) {
+			scene->mesh_renderers[scene->mesh_renderer_count] = node->mesh_renderer;
+			scene->mesh_renderer_entities[scene->mesh_renderer_count] = node->id;
+			scene->mesh_renderer_count++;
+		}
+
+		if (node->components & NB_NODE_COMPONENT_CAMERA) {
+			camera_t camera = node->camera;
+			if (node->components & NB_NODE_COMPONENT_TRANSFORM) {
+				camera.eye = node->world_position;
+			}
+
+			scene->cameras[scene->camera_count] = camera;
+			scene->camera_entities[scene->camera_count] = node->id;
+			scene->camera_count++;
+		}
+
+		if (node->components & NB_NODE_COMPONENT_LIGHT) {
+			scene->lights[scene->light_count] = node->light;
+			scene->light_entities[scene->light_count] = node->id;
+			scene->light_count++;
+		}
+
+		if (node->components & NB_NODE_COMPONENT_COLLIDER) {
+			scene->colliders[scene->collider_count] = node->collider;
+			scene->collider_entities[scene->collider_count] = node->id;
+			scene->collider_count++;
+		}
+	}
 }
 
 int scene_add_transform(scene_t* scene, entity_id_t id, transform_t transform) {
-	if (!scene_entity_exists(scene, id) || scene->transform_count >= NB_SCENE_MAX_ENTITIES) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node) {
 		return 0;
 	}
 
 	transform.previous_rotation = transform.rotation;
 	transform.initial_rotation = transform.rotation;
-	scene->transforms[scene->transform_count] = transform;
-	scene->transform_entities[scene->transform_count] = id;
-	scene->transform_count++;
+	node->transform = transform;
+	node->components |= NB_NODE_COMPONENT_TRANSFORM;
+	scene_rebuild_cache(scene);
 
 	return 1;
 }
 
 int scene_add_mesh_renderer(scene_t* scene, entity_id_t id, mesh_renderer_t renderer) {
-	if (!scene_entity_exists(scene, id) || scene->mesh_renderer_count >= NB_SCENE_MAX_ENTITIES) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node) {
 		return 0;
 	}
 
-	scene->mesh_renderers[scene->mesh_renderer_count] = renderer;
-	scene->mesh_renderer_entities[scene->mesh_renderer_count] = id;
-	scene->mesh_renderer_count++;
+	node->mesh_renderer = renderer;
+	node->components |= NB_NODE_COMPONENT_MESH_RENDERER;
+	scene_rebuild_cache(scene);
 
 	return 1;
 }
 
 int scene_add_camera(scene_t* scene, entity_id_t id, camera_t camera) {
-	if (!scene_entity_exists(scene, id) || scene->camera_count >= NB_SCENE_MAX_ENTITIES) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node) {
 		return 0;
 	}
 
-	scene->cameras[scene->camera_count] = camera;
-	scene->camera_entities[scene->camera_count] = id;
-	scene->camera_count++;
+	node->camera = camera;
+	node->components |= NB_NODE_COMPONENT_CAMERA;
+	scene_rebuild_cache(scene);
 
 	return 1;
 }
 
 int scene_add_light(scene_t* scene, entity_id_t id, light_t light) {
-	if (!scene_entity_exists(scene, id) || scene->light_count >= NB_SCENE_MAX_ENTITIES) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node) {
 		return 0;
 	}
 
-	scene->lights[scene->light_count] = light;
-	scene->light_entities[scene->light_count] = id;
-	scene->light_count++;
+	node->light = light;
+	node->components |= NB_NODE_COMPONENT_LIGHT;
+	scene_rebuild_cache(scene);
+
+	return 1;
+}
+
+int scene_add_collider(scene_t* scene, entity_id_t id, collider_t collider) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node || collider.shape >= NB_COLLIDER_SHAPE_COUNT) {
+		return 0;
+	}
+
+	if (collider.shape == NB_COLLIDER_SPHERE && collider.radius <= 0.0f) {
+		return 0;
+	}
+
+	if (collider.shape == NB_COLLIDER_AABB && (collider.extents.x <= 0.0f || collider.extents.y <= 0.0f || collider.extents.z <= 0.0f)) {
+		return 0;
+	}
+
+	node->collider = collider;
+	node->components |= NB_NODE_COMPONENT_COLLIDER;
+	scene_rebuild_cache(scene);
+
+	return 1;
+}
+
+int scene_add_script(scene_t* scene, entity_id_t id, script_id script, const char* module) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node || script == NB_RESOURCE_INVALID_ID || !module || !*module) {
+		return 0;
+	}
+
+	node->script = script;
+	snprintf(node->script_module, sizeof(node->script_module), "%s", module);
+	node->components |= NB_NODE_COMPONENT_SCRIPT;
 
 	return 1;
 }
@@ -154,4 +468,17 @@ light_t* scene_get_light(scene_t* scene, entity_id_t id) {
 	}
 
 	return &scene->lights[index];
+}
+
+collider_t* scene_get_collider(scene_t* scene, entity_id_t id) {
+	if (!scene) {
+		return NULL;
+	}
+
+	int index = scene_find_component(scene->collider_entities, scene->collider_count, id);
+	if (index < 0) {
+		return NULL;
+	}
+
+	return &scene->colliders[index];
 }

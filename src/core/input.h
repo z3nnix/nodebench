@@ -45,5 +45,7 @@ void input_update(input_state_t* state, platform_t* platform);
 void input_clear_transient(input_state_t* state);
 int input_was_pressed(const input_state_t* state, input_action_t action);
 int input_is_held(const input_state_t* state, input_action_t action);
+int input_action_from_name(const char* name, input_action_t* action);
+const char* input_action_name(input_action_t action);
 
 #endif

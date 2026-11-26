@@ -1,4 +1,33 @@
+#include <string.h>
+
 #include "core/input.h"
+
+static const char* input_action_names[NB_ACTION_COUNT] = {
+	"quit",
+	"pause",
+	"debug_cycle",
+	"debug_wireframe",
+	"debug_xray",
+	"reset",
+	"toggle_affine",
+	"toggle_dither",
+	"toggle_fog",
+	"toggle_cull",
+	"toggle_clip",
+	"camera_mode",
+	"camera_forward",
+	"camera_backward",
+	"camera_left",
+	"camera_right",
+	"camera_up",
+	"camera_down",
+	"camera_look_left",
+	"camera_look_right",
+	"camera_look_up",
+	"camera_look_down",
+	"hud",
+	"hud_debug"
+};
 
 static uint32_t input_bit(input_action_t action) {
 	if (action < 0 || action >= NB_ACTION_COUNT) { return 0; }
@@ -97,4 +126,27 @@ int input_was_pressed(const input_state_t* state, input_action_t action) {
 int input_is_held(const input_state_t* state, input_action_t action) {
 	if (!state) { return 0; }
 	return (state->held & input_bit(action)) != 0;
+}
+
+int input_action_from_name(const char* name, input_action_t* action) {
+	if (!name || !action) {
+		return 0;
+	}
+
+	for (int i = 0; i < (int)NB_ACTION_COUNT; i++) {
+		if (strcmp(name, input_action_names[i]) == 0) {
+			*action = (input_action_t)i;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+const char* input_action_name(input_action_t action) {
+	if (action < 0 || action >= NB_ACTION_COUNT) {
+		return "unknown";
+	}
+
+	return input_action_names[action];
 }

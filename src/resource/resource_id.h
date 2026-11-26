@@ -8,5 +8,7 @@
 typedef uint32_t mesh_id;
 typedef uint32_t texture_id;
 typedef uint32_t material_id;
+typedef uint32_t script_id;
+typedef uint32_t audio_id;
 
 #endif

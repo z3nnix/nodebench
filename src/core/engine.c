@@ -62,6 +62,19 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	resource_store_init(&engine->resources, engine->config.texture_vram_limit);
 	engine->resources_ready = 1;
 
+	if (!audio_init(&engine->audio)) {
+		engine_log(engine, "audio unavailable");
+	}
+
+	else {
+		engine->audio_ready = 1;
+	}
+
+	collision_state_init(&engine->collisions);
+
+	if (!wren_vm_init(&engine->script_vm, engine)) { return NB_RESULT_ERROR_SCENE; }
+	engine->script_vm_ready = 1;
+
 	return NB_RESULT_OK;
 }
 
@@ -154,6 +167,8 @@ static void engine_apply_actions(engine_t* engine) {
 
 	if (input_was_pressed(input, NB_ACTION_RESET) && engine->scene.reset) {
 		engine->scene.reset(engine, engine->scene.context);
+		collision_state_init(&engine->collisions);
+		audio_stop_all(&engine->audio);
 		changed = 1;
 	}
 
@@ -165,7 +180,27 @@ void engine_update(engine_t* engine, float dt) {
 
 	engine_apply_actions(engine);
 
+	if (engine->script_vm_ready) {
+		for (int i = 0; i < (int)NB_ACTION_COUNT; i++) {
+			input_action_t action = (input_action_t)i;
+			if (input_was_pressed(&engine->input, action)) { wren_vm_on_input(&engine->script_vm, input_action_name(action)); }
+		}
+
+		if (!engine->paused) {
+			wren_vm_update(&engine->script_vm, dt);
+		}
+	}
+
 	if (engine->scene.update) { engine->scene.update(engine, engine->scene.context, dt); }
+
+	if (!engine->paused && engine->scene_graph && engine->script_vm_ready) {
+		collision_events_t events;
+		if (collision_update(engine->scene_graph, &engine->collisions, &events)) {
+			for (int i = 0; i < events.count; i++) {
+				wren_vm_on_collision(&engine->script_vm, events.events[i].left, events.events[i].right);
+			}
+		}
+	}
 
 	input_clear_transient(&engine->input);
 }
@@ -185,7 +220,14 @@ void engine_render(engine_t* engine, float alpha) {
 void engine_shutdown(engine_t* engine) {
 	if (!engine) { return; }
 
+	if (engine->script_vm_ready) { wren_vm_shutdown(&engine->script_vm); }
+	engine->script_vm_ready = 0;
+
 	if (engine->scene_ready && engine->scene.shutdown) { engine->scene.shutdown(engine, engine->scene.context); }
+	engine->scene_graph = NULL;
+
+	if (engine->audio_ready) { audio_shutdown(&engine->audio); }
+	engine->audio_ready = 0;
 
 	if (engine->renderer_ready) { renderer_shutdown(&engine->renderer); }
 	if (engine->framebuffer_ready) { framebuffer_shutdown(&engine->framebuffer); }

@@ -1,13 +1,17 @@
 #ifndef NB_CORE_ENGINE_H
 #define NB_CORE_ENGINE_H
 
+#include "audio/audio.h"
 #include "core/config.h"
 #include "core/input.h"
 #include "core/log.h"
 #include "core/platform.h"
+#include "physics/collision.h"
 #include "render/framebuffer.h"
 #include "render/renderer.h"
 #include "resource/resource.h"
+#include "script/wren_vm.h"
+#include "scene/scene.h"
 #include "ui/hud.h"
 
 #define NB_ENGINE_FIXED_STEP 0.016666667f
@@ -53,11 +57,17 @@ typedef struct engine_t {
 	framebuffer_t framebuffer;
 	renderer_t renderer;
 	resource_store_t resources;
+	wren_vm_t script_vm;
+	audio_system_t audio;
+	collision_state_t collisions;
 	engine_scene_t scene;
+	scene_t* scene_graph;
 	input_state_t input;
 	engine_clock_t clock;
 	hud_t hud;
 	log_t log;
+	int script_vm_ready;
+	int audio_ready;
 	int paused;
 	int platform_ready;
 	int framebuffer_ready;
