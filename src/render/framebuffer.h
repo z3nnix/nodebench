@@ -10,7 +10,7 @@ typedef struct {
 	int width;
 	int height;
 	uint16_t* color;
-	render_config_t config;
+	const render_config_t* config;
 } framebuffer_t;
 
 int framebuffer_init(framebuffer_t* framebuffer, const render_config_t* config);

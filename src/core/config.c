@@ -1,3 +1,9 @@
+#include <ctype.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "core/config.h"
 
 static const unsigned char bayer_4x4[16] = {
@@ -6,6 +12,233 @@ static const unsigned char bayer_4x4[16] = {
 	3, 11, 1, 9,
 	15, 7, 13, 5
 };
+
+static char* trim(char* text) {
+	if (!text) { return NULL; }
+
+	while (*text && isspace((unsigned char)*text)) { text++; }
+
+	char* end = text + strlen(text);
+	while (end > text && isspace((unsigned char)end[-1])) { end--; }
+	*end = '\0';
+
+	return text;
+}
+
+static int parse_int(const char* text, int* out) {
+	if (!text || !out || !*text) { return 0; }
+
+	char* end = NULL;
+	long value = strtol(text, &end, 10);
+
+	if (end == text || *end != '\0') { return 0; }
+	if (value < -2147483647L || value > 2147483647L) { return 0; }
+
+	*out = (int)value;
+	return 1;
+}
+
+static int parse_float(const char* text, float* out) {
+	if (!text || !out || !*text) { return 0; }
+
+	char* end = NULL;
+	float value = strtof(text, &end);
+
+	if (end == text || *end != '\0') { return 0; }
+	if (!isfinite(value)) { return 0; }
+
+	*out = value;
+	return 1;
+}
+
+static int parse_bool(const char* text, int* out) {
+	if (!text || !out) { return 0; }
+
+	if (strcmp(text, "1") == 0 || strcmp(text, "true") == 0 || strcmp(text, "on") == 0) {
+		*out = 1;
+		return 1;
+	}
+
+	if (strcmp(text, "0") == 0 || strcmp(text, "false") == 0 || strcmp(text, "off") == 0) {
+		*out = 0;
+		return 1;
+	}
+
+	return parse_int(text, out);
+}
+
+static int parse_pair_ints(const char* text, char separator, int* first, int* second) {
+	if (!text || !first || !second || strlen(text) >= 128) { return 0; }
+
+	char buffer[128];
+	strcpy(buffer, text);
+
+	char* split = strchr(buffer, separator);
+	if (!split) { return 0; }
+	*split = '\0';
+
+	return parse_int(trim(buffer), first) && parse_int(trim(split + 1), second);
+}
+
+static int parse_pair_floats(const char* text, char separator, float* first, float* second) {
+	if (!text || !first || !second || strlen(text) >= 128) { return 0; }
+
+	char buffer[128];
+	strcpy(buffer, text);
+
+	char* split = strchr(buffer, separator);
+	if (!split) { return 0; }
+	*split = '\0';
+
+	return parse_float(trim(buffer), first) && parse_float(trim(split + 1), second);
+}
+
+static int parse_vec3_ints(const char* text, int* out) {
+	if (!text || !out || strlen(text) >= 128) { return 0; }
+
+	char buffer[128];
+	strcpy(buffer, text);
+
+	char* token = strtok(buffer, ",");
+
+	for (int i = 0; i < 3; i++) {
+		if (!token || !parse_int(trim(token), &out[i])) { return 0; }
+		token = strtok(NULL, ",");
+	}
+
+	return token == NULL;
+}
+
+static int parse_vec3_floats(const char* text, float* out) {
+	if (!text || !out || strlen(text) >= 128) { return 0; }
+
+	char buffer[128];
+	strcpy(buffer, text);
+
+	char* token = strtok(buffer, ",");
+
+	for (int i = 0; i < 3; i++) {
+		if (!token || !parse_float(trim(token), &out[i])) { return 0; }
+		token = strtok(NULL, ",");
+	}
+
+	return token == NULL;
+}
+
+static int parse_blend_mode(const char* text, nb_blend_mode_t* out) {
+	if (!text || !out) { return 0; }
+
+	if (strcmp(text, "none") == 0) {
+		*out = NB_BLEND_NONE;
+		return 1;
+	}
+
+	if (strcmp(text, "alpha50") == 0) {
+		*out = NB_BLEND_ALPHA_50;
+		return 1;
+	}
+
+	if (strcmp(text, "add") == 0) {
+		*out = NB_BLEND_ADD;
+		return 1;
+	}
+
+	if (strcmp(text, "subtract") == 0) {
+		*out = NB_BLEND_SUBTRACT;
+		return 1;
+	}
+
+	if (strcmp(text, "addquarter") == 0) {
+		*out = NB_BLEND_ADD_QUARTER;
+		return 1;
+	}
+
+	return 0;
+}
+
+static int parse_shade_mode(const char* text, nb_shade_mode_t* out) {
+	if (!text || !out) { return 0; }
+
+	if (strcmp(text, "flat") == 0) {
+		*out = NB_SHADE_FLAT;
+		return 1;
+	}
+
+	if (strcmp(text, "gouraud") == 0) {
+		*out = NB_SHADE_GOURAUD;
+		return 1;
+	}
+
+	return 0;
+}
+
+static int config_set_value(render_config_t* config, const char* key, const char* value) {
+	if (!config || !key || !value) { return 0; }
+
+	if (strcmp(key, "virtual_resolution") == 0) { return parse_pair_ints(value, 'x', &config->width, &config->height); }
+
+	else if (strcmp(key, "vertex_snap_grid") == 0) { return parse_pair_ints(value, 'x', &config->snap_grid_width, &config->snap_grid_height); }
+
+	else if (strcmp(key, "affine_strength") == 0) { return parse_float(value, &config->affine_strength); }
+
+	else if (strcmp(key, "color_depth") == 0) { return parse_int(value, &config->color_depth); }
+
+	else if (strcmp(key, "dithering") == 0) { return parse_bool(value, &config->dither_enabled); }
+
+	else if (strcmp(key, "fog_enabled") == 0) { return parse_bool(value, &config->fog_enabled); }
+
+	else if (strcmp(key, "fog_range") == 0) { return parse_pair_floats(value, ',', &config->fog_near, &config->fog_far); }
+
+	else if (strcmp(key, "fog_color") == 0) { return parse_vec3_ints(value, config->fog_color_rgb); }
+
+	else if (strcmp(key, "near_plane") == 0) { return parse_float(value, &config->near_plane); }
+
+	else if (strcmp(key, "far_plane") == 0) { return parse_float(value, &config->far_plane); }
+
+	else if (strcmp(key, "cull_backfaces") == 0) { return parse_bool(value, &config->cull_backfaces); }
+
+	else if (strcmp(key, "reject_near_triangles") == 0) { return parse_bool(value, &config->reject_near_triangles); }
+
+	else if (strcmp(key, "subdivide_large_triangles") == 0) { return parse_bool(value, &config->subdivide_large_triangles); }
+
+	else if (strcmp(key, "subdivide_area_threshold") == 0) { return parse_float(value, &config->subdivide_area_threshold); }
+
+	else if (strcmp(key, "blend_mode") == 0) { return parse_blend_mode(value, &config->blend_mode); }
+
+	else if (strcmp(key, "shade_mode") == 0) { return parse_shade_mode(value, &config->shade_mode); }
+
+	else if (strcmp(key, "light_direction") == 0) { return parse_vec3_floats(value, config->light_direction); }
+
+	else if (strcmp(key, "texture_vram_limit") == 0) { return parse_int(value, &config->texture_vram_limit); }
+
+	return 0;
+}
+
+static int file_exists(const char* path) {
+	FILE* file = fopen(path, "r");
+	if (!file) { return 0; }
+	fclose(file);
+	return 1;
+}
+
+static int config_validate(const render_config_t* config) {
+	if (!config) { return 0; }
+	if (config->width <= 0 || config->height <= 0) { return 0; }
+	if (config->snap_grid_width <= 0 || config->snap_grid_height <= 0) { return 0; }
+	if (config->near_plane <= 0.0f || config->far_plane <= config->near_plane) { return 0; }
+	if (config->affine_strength < 0.0f || config->affine_strength > 1.0f) { return 0; }
+	if (config->color_depth != 15) { return 0; }
+	if (config->fog_near < 0.0f || config->fog_far <= config->fog_near) { return 0; }
+	if (!config->dither_matrix) { return 0; }
+	if (config->subdivide_area_threshold < 0.0f) { return 0; }
+	if (config->texture_vram_limit < 0) { return 0; }
+
+	for (int i = 0; i < 3; i++) {
+		if (config->fog_color_rgb[i] < 0 || config->fog_color_rgb[i] > 255) { return 0; }
+	}
+
+	return 1;
+}
 
 void render_config_init(render_config_t* config) {
 	if (!config) { return; }
@@ -18,6 +251,7 @@ void render_config_init(render_config_t* config) {
 	config->far_plane = 100.0f;
 	config->affine_strength = 1.0f;
 	config->color_depth = 15;
+	config->fog_enabled = 1;
 	config->fog_near = 8.0f;
 	config->fog_far = 25.0f;
 	config->fog_color_rgb[0] = 8;
@@ -35,4 +269,144 @@ void render_config_init(render_config_t* config) {
 	config->light_direction[1] = 0.7f;
 	config->light_direction[2] = 1.0f;
 	config->texture_vram_limit = 1024 * 1024;
+}
+
+int config_load_file(render_config_t* config, const char* path) {
+	if (!config || !path) { return 0; }
+
+	FILE* file = fopen(path, "r");
+	if (!file) { return 1; }
+
+	char line[256];
+	int line_number = 0;
+
+	while (fgets(line, (int)sizeof(line), file)) {
+		line_number++;
+
+		char* comment = strchr(line, '#');
+		if (comment) { *comment = '\0'; }
+
+		char* equals = strchr(line, '=');
+		if (!equals) { continue; }
+		*equals = '\0';
+
+		char* key = trim(line);
+		char* value = trim(equals + 1);
+
+		if (!*key || !*value) { continue; }
+
+		if (!config_set_value(config, key, value)) {
+			fprintf(stderr, "%s:%d: invalid key or value: %s\n", path, line_number, key);
+			fclose(file);
+			return 0;
+		}
+	}
+
+	fclose(file);
+
+	if (!config_validate(config)) {
+		fprintf(stderr, "%s: invalid configuration\n", path);
+		return 0;
+	}
+
+	return 1;
+}
+
+int config_apply_cli(render_config_t* config, int argc, char** argv) {
+	if (!config) { return 0; }
+
+	const char* config_path = NULL;
+
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+			config_print_usage(argv[0] ? argv[0] : "nodebench");
+			return 2;
+		}
+
+		if (strncmp(argv[i], "--config=", 9) == 0) {
+			config_path = argv[i] + 9;
+		}
+
+		else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+			config_path = argv[++i];
+		}
+	}
+
+	if (config_path && !file_exists(config_path)) {
+		fprintf(stderr, "config file not found: %s\n", config_path);
+		return 0;
+	}
+
+	if (config_path && !config_load_file(config, config_path)) { return 0; }
+
+	int skip_next = 0;
+
+	for (int i = 1; i < argc; i++) {
+		if (skip_next) {
+			skip_next = 0;
+			continue;
+		}
+
+		if (strcmp(argv[i], "--config") == 0) {
+			skip_next = 1;
+			continue;
+		}
+
+		if (strncmp(argv[i], "--config=", 9) == 0) { continue; }
+
+		if (strncmp(argv[i], "--", 2) != 0 || strlen(argv[i]) >= 384) {
+			fprintf(stderr, "unexpected argument: %s\n", argv[i]);
+			return 0;
+		}
+
+		const char* equals = strchr(argv[i], '=');
+		if (!equals) {
+			fprintf(stderr, "expected --key=value, got: %s\n", argv[i]);
+			return 0;
+		}
+
+		char key[128];
+		char value[256];
+
+		size_t key_length = (size_t)(equals - (argv[i] + 2));
+		if (key_length == 0 || key_length >= sizeof(key)) {
+			fprintf(stderr, "invalid option name: %s\n", argv[i]);
+			return 0;
+		}
+
+		memcpy(key, argv[i] + 2, key_length);
+		key[key_length] = '\0';
+		strncpy(value, equals + 1, sizeof(value) - 1);
+		value[sizeof(value) - 1] = '\0';
+
+		char* clean_key = trim(key);
+		char* clean_value = trim(value);
+
+		if (!config_set_value(config, clean_key, clean_value)) {
+			fprintf(stderr, "invalid option: %s\n", argv[i]);
+			return 0;
+		}
+	}
+
+	if (!config_validate(config)) {
+		fprintf(stderr, "invalid configuration after CLI overrides\n");
+		return 0;
+	}
+
+	return 1;
+}
+
+void config_print_usage(const char* program) {
+	if (!program) { program = "nodebench"; }
+
+	fprintf(stdout, "usage: %s [--config=path] [--key=value]\n", program);
+	fprintf(stdout, "keys:\n");
+	fprintf(stdout, "  virtual_resolution=320x240 vertex_snap_grid=320x240\n");
+	fprintf(stdout, "  affine_strength=0..1 color_depth=15 dithering=0|1\n");
+	fprintf(stdout, "  fog_enabled=0|1 fog_range=8,25 fog_color=8,14,28\n");
+	fprintf(stdout, "  near_plane=0.1 far_plane=100 cull_backfaces=0|1 reject_near_triangles=0|1\n");
+	fprintf(stdout, "  subdivide_large_triangles=0|1 subdivide_area_threshold=4096\n");
+	fprintf(stdout, "  blend_mode=none|alpha50|add|subtract|addquarter shade_mode=flat|gouraud\n");
+	fprintf(stdout, "  light_direction=0.4,0.7,1.0 texture_vram_limit=1048576\n");
+	fprintf(stdout, "hotkeys: 1 affine, 2 dither, 3 fog, 4 cull, 5 near-clip, r reset, esc quit\n");
 }

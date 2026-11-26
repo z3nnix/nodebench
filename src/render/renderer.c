@@ -166,10 +166,10 @@ static void rasterize_triangle(renderer_t* renderer, const projected_triangle_t*
 }
 
 int renderer_init(renderer_t* renderer, framebuffer_t* framebuffer) {
-	if (!renderer || !framebuffer) { return 0; }
+	if (!renderer || !framebuffer || !framebuffer->config) { return 0; }
 
 	renderer->framebuffer = framebuffer;
-	renderer->config = &framebuffer->config;
+	renderer->config = framebuffer->config;
 	renderer->projected = NULL;
 	renderer->world = NULL;
 	renderer->triangles = NULL;
@@ -248,7 +248,7 @@ void renderer_draw_mesh(renderer_t* renderer, const mesh_t* mesh, const texture_
 		float distance = -view4.z;
 		float fog = 0.0f;
 
-		if (config->fog_far != config->fog_near) { fog = (distance - config->fog_near) / (config->fog_far - config->fog_near); }
+		if (config->fog_enabled && config->fog_far != config->fog_near) { fog = (distance - config->fog_near) / (config->fog_far - config->fog_near); }
 		projected->fog = clamp01(fog);
 
 		renderer->world[i] = (vec3_t){ world4.x, world4.y, world4.z };

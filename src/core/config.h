@@ -23,6 +23,7 @@ typedef struct {
 	float far_plane;
 	float affine_strength;
 	int color_depth;
+	int fog_enabled;
 	float fog_near;
 	float fog_far;
 	int fog_color_rgb[3];
@@ -39,5 +40,8 @@ typedef struct {
 } render_config_t;
 
 void render_config_init(render_config_t* config);
+int config_load_file(render_config_t* config, const char* path);
+int config_apply_cli(render_config_t* config, int argc, char** argv);
+void config_print_usage(const char* program);
 
 #endif

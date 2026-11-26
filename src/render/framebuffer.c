@@ -9,9 +9,9 @@ static float clamp_channel(float value) {
 }
 
 static float dither_offset(const framebuffer_t* framebuffer, int x, int y) {
-	if (!framebuffer->config.dither_enabled || !framebuffer->config.dither_matrix) { return 0.0f; }
+	if (!framebuffer->config || !framebuffer->config->dither_enabled || !framebuffer->config->dither_matrix) { return 0.0f; }
 
-	unsigned char threshold = framebuffer->config.dither_matrix[(y & 3) * 4 + (x & 3)];
+	unsigned char threshold = framebuffer->config->dither_matrix[(y & 3) * 4 + (x & 3)];
 	return ((float)threshold - 7.5f) * 0.5f;
 }
 
@@ -21,7 +21,7 @@ int framebuffer_init(framebuffer_t* framebuffer, const render_config_t* config) 
 	framebuffer->width = config->width;
 	framebuffer->height = config->height;
 	framebuffer->color = NULL;
-	framebuffer->config = *config;
+	framebuffer->config = config;
 
 	if (framebuffer->width <= 0 || framebuffer->height <= 0) { return 0; }
 
@@ -36,6 +36,7 @@ void framebuffer_shutdown(framebuffer_t* framebuffer) {
 
 	free(framebuffer->color);
 	framebuffer->color = NULL;
+	framebuffer->config = NULL;
 	framebuffer->width = 0;
 	framebuffer->height = 0;
 }

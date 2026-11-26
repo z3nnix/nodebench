@@ -3,6 +3,24 @@
 
 #include "core/platform.h"
 
+static platform_key_t map_key(SDL_Keycode sym) {
+	if (sym == SDLK_ESCAPE) { return NB_KEY_ESCAPE; }
+
+	else if (sym == SDLK_r) { return NB_KEY_R; }
+
+	else if (sym == SDLK_1) { return NB_KEY_1; }
+
+	else if (sym == SDLK_2) { return NB_KEY_2; }
+
+	else if (sym == SDLK_3) { return NB_KEY_3; }
+
+	else if (sym == SDLK_4) { return NB_KEY_4; }
+
+	else if (sym == SDLK_5) { return NB_KEY_5; }
+
+	return NB_KEY_NONE;
+}
+
 int platform_init(platform_t* platform, const platform_desc_t* desc) {
 	if (!platform || !desc) { return 0; }
 
@@ -13,6 +31,7 @@ int platform_init(platform_t* platform, const platform_desc_t* desc) {
 	platform->width = desc->width;
 	platform->height = desc->height;
 	platform->last_time = 0;
+	platform->key_count = 0;
 
 	if (platform->width <= 0 || platform->height <= 0) { return 0; }
 
@@ -69,6 +88,7 @@ void platform_shutdown(platform_t* platform) {
 	platform->renderer = NULL;
 	platform->window = NULL;
 	platform->pixels = NULL;
+	platform->key_count = 0;
 
 	SDL_Quit();
 }
@@ -81,8 +101,26 @@ void platform_pump_events(platform_t* platform, int* should_quit) {
 	while (SDL_PollEvent(&event)) {
 		if (event.type == SDL_QUIT) { *should_quit = 1; }
 
-		if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) { *should_quit = 1; }
+		if (event.type == SDL_KEYDOWN) {
+			platform_key_t key = map_key(event.key.keysym.sym);
+
+			if (key != NB_KEY_NONE && platform->key_count < 16) { platform->keys[platform->key_count++] = key; }
+
+			if (key == NB_KEY_ESCAPE) { *should_quit = 1; }
+		}
 	}
+}
+
+int platform_pop_key(platform_t* platform, platform_key_t* key) {
+	if (!platform || !key || platform->key_count <= 0) { return 0; }
+
+	*key = platform->keys[0];
+
+	for (int i = 1; i < platform->key_count; i++) { platform->keys[i - 1] = platform->keys[i]; }
+
+	platform->key_count--;
+
+	return 1;
 }
 
 float platform_delta_time(platform_t* platform) {
