@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "core/config.h"
 #include "core/math.h"
@@ -8,7 +9,12 @@
 #include "render/mesh.h"
 #include "render/renderer.h"
 #include "render/texture.h"
+#include "resource/loader.h"
+#include "resource/resource.h"
 #include "scene/demo.h"
+
+#define NB_DEMO_VERTEX_CAPACITY 64
+#define NB_DEMO_TRIANGLE_CAPACITY 64
 
 static const float pi = 3.14159265f;
 
@@ -41,30 +47,84 @@ int demo_run(int argc, char** argv) {
 	platform_t platform;
 	if (!platform_init(&platform, &platform_desc)) { return 1; }
 
+	int platform_ready = 1;
+	int framebuffer_ready = 0;
+	int renderer_ready = 0;
+	int resources_ready = 0;
+	int status = 1;
+
+	image_t image = { 0, 0, NULL };
+	palette_t palette = { NULL, 0 };
+	uint8_t* texture_pixels = NULL;
+
 	uint32_t* output = platform_pixels(&platform);
 	framebuffer_t framebuffer;
-	if (!framebuffer_init(&framebuffer, &config)) {
-		platform_shutdown(&platform);
-		return 1;
-	}
+	if (!framebuffer_init(&framebuffer, &config)) { goto cleanup; }
+	framebuffer_ready = 1;
 
 	renderer_t renderer;
-	if (!renderer_init(&renderer, &framebuffer)) {
-		framebuffer_shutdown(&framebuffer);
-		platform_shutdown(&platform);
-		return 1;
+	if (!renderer_init(&renderer, &framebuffer)) { goto cleanup; }
+	renderer_ready = 1;
+
+	resource_store_t resources;
+	resource_store_init(&resources, config.texture_vram_limit);
+	resources_ready = 1;
+
+	vertex_t vertices[NB_DEMO_VERTEX_CAPACITY];
+	triangle_t triangles[NB_DEMO_TRIANGLE_CAPACITY];
+	mesh_t mesh;
+	if (!obj_load("assets/cube.obj", &mesh, vertices, NB_DEMO_VERTEX_CAPACITY, triangles, NB_DEMO_TRIANGLE_CAPACITY)) {
+		fprintf(stderr, "failed to load assets/cube.obj\n");
+		goto cleanup;
 	}
 
-	vertex_t vertices[24];
-	triangle_t triangles[12];
-	mesh_t mesh;
-	mesh_create_cube(&mesh, vertices, 24, triangles, 12, 1.0f);
+	mesh_id mesh_handle = resource_add_mesh(&resources, &mesh);
+	if (mesh_handle == NB_RESOURCE_INVALID_ID) {
+		fprintf(stderr, "failed to add mesh resource\n");
+		goto cleanup;
+	}
 
-	uint8_t texture_pixels[64 * 64 / 2];
-	uint16_t palette[16];
-	texture_t texture;
-	texture_generate_demo(texture_pixels, palette, 64, 64);
-	texture_init(&texture, 64, 64, NB_TEXTURE_4BIT, texture_pixels, palette, -1);
+	if (!image_load("assets/cube.ppm", &image)) {
+		fprintf(stderr, "failed to load assets/cube.ppm\n");
+		goto cleanup;
+	}
+
+	if (!clut_load("assets/cube.clut", &palette)) {
+		fprintf(stderr, "failed to load assets/cube.clut\n");
+		goto cleanup;
+	}
+
+	if (!image_quantize(&image, &palette, NB_TEXTURE_4BIT, &texture_pixels)) {
+		fprintf(stderr, "failed to quantize assets/cube.ppm\n");
+		goto cleanup;
+	}
+
+	texture_t texture_source;
+	texture_init(&texture_source, image.width, image.height, NB_TEXTURE_4BIT, texture_pixels, palette.colors, -1);
+
+	texture_id texture_handle = resource_add_texture(&resources, &texture_source);
+	if (texture_handle == NB_RESOURCE_INVALID_ID) {
+		fprintf(stderr, "failed to add texture resource\n");
+		goto cleanup;
+	}
+
+	material_t material;
+	material.blend_mode = config.blend_mode;
+	material.shade_mode = config.shade_mode;
+	material.texture = texture_handle;
+
+	material_id material_handle = resource_add_material(&resources, &material);
+	if (material_handle == NB_RESOURCE_INVALID_ID) {
+		fprintf(stderr, "failed to add material resource\n");
+		goto cleanup;
+	}
+
+	mesh_t* loaded_mesh = resource_get_mesh(&resources, mesh_handle);
+	texture_t* loaded_texture = resource_get_texture(&resources, texture_handle);
+	material_t* loaded_material = resource_get_material(&resources, material_handle);
+	if (!loaded_mesh || !loaded_texture || !loaded_material) { goto cleanup; }
+
+	fprintf(stderr, "loaded mesh=%u texture=%u material=%u vram=%d\n", (unsigned)mesh_handle, (unsigned)texture_handle, (unsigned)material_handle, resource_vram_used(&resources));
 
 	mat4_t projection;
 	mat4_t view;
@@ -125,14 +185,22 @@ int demo_run(int argc, char** argv) {
 		mat4_rotate_x(&rotation_x, angle * 0.6f);
 		mat4_multiply(&model, &rotation_y, &rotation_x);
 
-		renderer_draw_mesh(&renderer, &mesh, &texture, &model, config.blend_mode);
+		renderer_draw_mesh(&renderer, loaded_mesh, loaded_texture, &model, loaded_material->blend_mode);
 		framebuffer_resolve(&framebuffer, output);
 		platform_present(&platform);
 	}
 
-	renderer_shutdown(&renderer);
-	framebuffer_shutdown(&framebuffer);
-	platform_shutdown(&platform);
+	status = 0;
 
-	return 0;
+cleanup:
+	if (renderer_ready) { renderer_shutdown(&renderer); }
+	if (framebuffer_ready) { framebuffer_shutdown(&framebuffer); }
+	if (platform_ready) { platform_shutdown(&platform); }
+	if (resources_ready) { resource_store_shutdown(&resources); }
+
+	image_free(&image);
+	clut_free(&palette);
+	free(texture_pixels);
+
+	return status;
 }
