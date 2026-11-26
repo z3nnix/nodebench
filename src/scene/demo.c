@@ -4,178 +4,211 @@
 #include "core/math.h"
 #include "render/color.h"
 #include "render/framebuffer.h"
-#include "render/mesh.h"
 #include "render/renderer.h"
-#include "render/texture.h"
-#include "resource/loader.h"
 #include "resource/resource.h"
 #include "scene/demo.h"
+#include "scene/loader_tscn.h"
+#include "scene/scene.h"
+
+#define NB_DEMO_SCENE_PATH "assets/scene.tscn"
 
 static const float pi = 3.14159265f;
 
 typedef struct {
-	mesh_id mesh;
-	texture_id texture;
-	material_id material;
-	float angle;
-	float previous_angle;
+	scene_t scene;
 } demo_scene_t;
 
-static void demo_configure_camera(engine_t* engine) {
+static void demo_scale_matrix(mat4_t* out, vec3_t scale) {
+	mat4_identity(out);
+	out->m[0] = scale.x;
+	out->m[5] = scale.y;
+	out->m[10] = scale.z;
+}
+
+static void demo_configure_camera(engine_t* engine, const scene_t* scene) {
 	float aspect = (float)engine->config.width / (float)engine->config.height;
+	camera_t camera;
+
+	if (scene->camera_count > 0) {
+		camera = scene->cameras[0];
+	}
+
+	else {
+		camera.eye.x = 0.0f;
+		camera.eye.y = 0.0f;
+		camera.eye.z = 5.0f;
+		camera.target.x = 0.0f;
+		camera.target.y = 0.0f;
+		camera.target.z = 0.0f;
+		camera.up.x = 0.0f;
+		camera.up.y = 1.0f;
+		camera.up.z = 0.0f;
+		camera.fov = 60.0f;
+		camera.near_plane = engine->config.near_plane;
+		camera.far_plane = engine->config.far_plane;
+	}
+
 	mat4_t projection;
 	mat4_t view;
 
-	mat4_perspective(&projection, 60.0f * pi / 180.0f, aspect, engine->config.near_plane, engine->config.far_plane);
-
-	vec3_t eye = { 0.0f, 0.0f, 5.0f };
-	vec3_t center = { 0.0f, 0.0f, 0.0f };
-	vec3_t up = { 0.0f, 1.0f, 0.0f };
-
-	mat4_look_at(&view, eye, center, up);
+	mat4_perspective(&projection, camera.fov * pi / 180.0f, aspect, camera.near_plane, camera.far_plane);
+	mat4_look_at(&view, camera.eye, camera.target, camera.up);
 	renderer_set_camera(&engine->renderer, &view, &projection);
 }
 
+static void demo_configure_light(engine_t* engine, const scene_t* scene) {
+	if (scene->light_count == 0) {
+		return;
+	}
+
+	const light_t* light = &scene->lights[0];
+	vec3_t direction = vec3_scale(light->direction, light->intensity);
+	engine->config.light_direction[0] = direction.x;
+	engine->config.light_direction[1] = direction.y;
+	engine->config.light_direction[2] = direction.z;
+}
+
 static nb_result_t demo_scene_init(engine_t* engine, void** context) {
-	if (!engine || !context) { return NB_RESULT_ERROR_INVALID_ARGUMENT; }
-
-	demo_scene_t* scene = (demo_scene_t*)malloc(sizeof(demo_scene_t));
-	if (!scene) { return NB_RESULT_ERROR_SCENE; }
-
-	scene->mesh = NB_RESOURCE_INVALID_ID;
-	scene->texture = NB_RESOURCE_INVALID_ID;
-	scene->material = NB_RESOURCE_INVALID_ID;
-	scene->angle = 0.0f;
-	scene->previous_angle = 0.0f;
-
-	nb_result_t result = NB_RESULT_ERROR_RESOURCE;
-	image_t image = { 0, 0, NULL };
-	palette_t palette = { NULL, 0 };
-	uint8_t* texture_pixels = NULL;
-
-	mesh_t mesh;
-	if (!obj_load("assets/cube.obj", &mesh)) {
-		engine_log(engine, "failed to load assets/cube.obj");
-		goto cleanup;
+	if (!engine || !context) {
+		return NB_RESULT_ERROR_INVALID_ARGUMENT;
 	}
 
-	scene->mesh = resource_add_mesh(&engine->resources, &mesh);
-	mesh_destroy(&mesh);
-	if (scene->mesh == NB_RESOURCE_INVALID_ID) {
-		engine_log(engine, "failed to add mesh resource");
-		goto cleanup;
+	demo_scene_t* runtime = (demo_scene_t*)malloc(sizeof(demo_scene_t));
+	if (!runtime) {
+		return NB_RESULT_ERROR_SCENE;
 	}
 
-	if (!image_load("assets/cube.ppm", &image)) {
-		engine_log(engine, "failed to load assets/cube.ppm");
-		goto cleanup;
+	scene_init(&runtime->scene);
+
+	nb_result_t result = scene_load_tscn(NB_DEMO_SCENE_PATH, engine, &runtime->scene);
+	if (result != NB_RESULT_OK) {
+		engine_log(engine, "failed to load %s: %s", NB_DEMO_SCENE_PATH, nb_error_string(result));
+		scene_shutdown(&runtime->scene);
+		free(runtime);
+
+		return result;
 	}
 
-	if (!clut_load("assets/cube.clut", &palette)) {
-		engine_log(engine, "failed to load assets/cube.clut");
-		goto cleanup;
-	}
+	demo_configure_camera(engine, &runtime->scene);
+	demo_configure_light(engine, &runtime->scene);
+	*context = runtime;
 
-	if (!image_quantize(&image, &palette, NB_TEXTURE_4BIT, &texture_pixels)) {
-		engine_log(engine, "failed to quantize assets/cube.ppm");
-		goto cleanup;
-	}
+	engine_log(engine, "loaded scene=%s entities=%d meshes=%d cameras=%d lights=%d vram=%d", NB_DEMO_SCENE_PATH, runtime->scene.entity_count, runtime->scene.mesh_renderer_count, runtime->scene.camera_count, runtime->scene.light_count, resource_vram_used(&engine->resources));
 
-	texture_t texture_source;
-	texture_init(&texture_source, image.width, image.height, NB_TEXTURE_4BIT, texture_pixels, palette.colors, -1);
-
-	scene->texture = resource_add_texture(&engine->resources, &texture_source);
-	if (scene->texture == NB_RESOURCE_INVALID_ID) {
-		engine_log(engine, "failed to add texture resource");
-		goto cleanup;
-	}
-
-	material_t material;
-	material.blend_mode = engine->config.blend_mode;
-	material.shade_mode = engine->config.shade_mode;
-	material.texture = scene->texture;
-
-	scene->material = resource_add_material(&engine->resources, &material);
-	if (scene->material == NB_RESOURCE_INVALID_ID) {
-		engine_log(engine, "failed to add material resource");
-		goto cleanup;
-	}
-
-	mesh_t* loaded_mesh = resource_get_mesh(&engine->resources, scene->mesh);
-	if (!loaded_mesh) {
-		goto cleanup;
-	}
-
-	engine_log(engine, "loaded mesh=%u verts=%d tris=%d texture=%u material=%u vram=%d", (unsigned)scene->mesh, loaded_mesh->vertex_count, loaded_mesh->triangle_count, (unsigned)scene->texture, (unsigned)scene->material, resource_vram_used(&engine->resources));
-
-	demo_configure_camera(engine);
-	*context = scene;
-	result = NB_RESULT_OK;
-
-cleanup:
-	image_free(&image);
-	clut_free(&palette);
-	free(texture_pixels);
-
-	if (result != NB_RESULT_OK) { free(scene); }
-
-	return result;
+	return NB_RESULT_OK;
 }
 
 static void demo_scene_update(engine_t* engine, void* context, float dt) {
 	(void)engine;
 
-	demo_scene_t* scene = (demo_scene_t*)context;
-	if (!scene) { return; }
+	demo_scene_t* runtime = (demo_scene_t*)context;
+	if (!runtime) {
+		return;
+	}
 
-	scene->previous_angle = scene->angle;
-	scene->angle += dt * 0.8f;
+	scene_t* scene = &runtime->scene;
+	for (int i = 0; i < scene->transform_count; i++) {
+		transform_t* transform = &scene->transforms[i];
+		transform->previous_rotation = transform->rotation;
+		transform->rotation.y += dt * transform->spin_speed;
+		transform->rotation.x += dt * transform->spin_speed * 0.6f;
+	}
 }
 
 static void demo_scene_render(engine_t* engine, void* context, float alpha) {
-	demo_scene_t* scene = (demo_scene_t*)context;
-	if (!engine || !scene) { return; }
+	demo_scene_t* runtime = (demo_scene_t*)context;
+	if (!engine || !runtime) {
+		return;
+	}
 
-	if (alpha < 0.0f) { alpha = 0.0f; }
-	if (alpha > 1.0f) { alpha = 1.0f; }
+	if (alpha < 0.0f) {
+		alpha = 0.0f;
+	}
 
-	mesh_t* mesh = resource_get_mesh(&engine->resources, scene->mesh);
-	texture_t* texture = resource_get_texture(&engine->resources, scene->texture);
-	material_t* material = resource_get_material(&engine->resources, scene->material);
-	if (!mesh || !texture || !material) { return; }
+	else if (alpha > 1.0f) {
+		alpha = 1.0f;
+	}
+
+	scene_t* scene = &runtime->scene;
+	demo_configure_camera(engine, scene);
 
 	uint16_t background_top = rgb555_pack(6, 10, 22);
 	uint16_t background_bottom = rgb555_pack(18, 26, 44);
 	framebuffer_clear_gradient(&engine->framebuffer, background_top, background_bottom);
 
-	float angle = scene->previous_angle + (scene->angle - scene->previous_angle) * alpha;
-	mat4_t rotation_x;
-	mat4_t rotation_y;
-	mat4_t model;
+	for (int i = 0; i < scene->mesh_renderer_count; i++) {
+		entity_id_t id = scene->mesh_renderer_entities[i];
+		mesh_renderer_t* renderer_component = &scene->mesh_renderers[i];
+		transform_t* transform = scene_get_transform(scene, id);
+		mesh_t* mesh = resource_get_mesh(&engine->resources, renderer_component->mesh);
+		material_t* material = resource_get_material(&engine->resources, renderer_component->material);
+		texture_t* texture = NULL;
 
-	mat4_rotate_y(&rotation_y, angle);
-	mat4_rotate_x(&rotation_x, angle * 0.6f);
-	mat4_multiply(&model, &rotation_y, &rotation_x);
+		if (!transform || !mesh || !material) {
+			continue;
+		}
 
-	renderer_draw_mesh(&engine->renderer, mesh, texture, &model, material->blend_mode);
+		texture = resource_get_texture(&engine->resources, material->texture);
+		if (!texture) {
+			continue;
+		}
+
+		vec3_t rotation;
+		rotation.x = transform->previous_rotation.x + (transform->rotation.x - transform->previous_rotation.x) * alpha;
+		rotation.y = transform->previous_rotation.y + (transform->rotation.y - transform->previous_rotation.y) * alpha;
+		rotation.z = transform->previous_rotation.z + (transform->rotation.z - transform->previous_rotation.z) * alpha;
+
+		mat4_t translation;
+		mat4_t rotation_x;
+		mat4_t rotation_y;
+		mat4_t scale;
+		mat4_t model;
+
+		mat4_translate(&translation, transform->position.x, transform->position.y, transform->position.z);
+		mat4_rotate_y(&rotation_y, rotation.y);
+		mat4_rotate_x(&rotation_x, rotation.x);
+		demo_scale_matrix(&scale, transform->scale);
+		mat4_multiply(&model, &translation, &rotation_y);
+		mat4_multiply(&model, &model, &rotation_x);
+		mat4_multiply(&model, &model, &scale);
+
+		renderer_draw_mesh(&engine->renderer, mesh, texture, &model, material->blend_mode);
+	}
 }
 
 static void demo_scene_reset(engine_t* engine, void* context) {
-	demo_scene_t* scene = (demo_scene_t*)context;
-	if (!engine || !scene) { return; }
+	demo_scene_t* runtime = (demo_scene_t*)context;
+	if (!engine || !runtime) {
+		return;
+	}
 
-	scene->angle = 0.0f;
-	scene->previous_angle = 0.0f;
-	demo_configure_camera(engine);
+	scene_t* scene = &runtime->scene;
+	for (int i = 0; i < scene->transform_count; i++) {
+		transform_t* transform = &scene->transforms[i];
+		transform->rotation = transform->initial_rotation;
+		transform->previous_rotation = transform->initial_rotation;
+	}
+
+	demo_configure_camera(engine, scene);
+	demo_configure_light(engine, scene);
 }
 
 static void demo_scene_shutdown(engine_t* engine, void* context) {
 	(void)engine;
-	free(context);
+
+	demo_scene_t* runtime = (demo_scene_t*)context;
+	if (!runtime) {
+		return;
+	}
+
+	scene_shutdown(&runtime->scene);
+	free(runtime);
 }
 
 void demo_scene_register(engine_t* engine) {
-	if (!engine) { return; }
+	if (!engine) {
+		return;
+	}
 
 	engine->scene.context = NULL;
 	engine->scene.init = demo_scene_init;

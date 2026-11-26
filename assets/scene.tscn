@@ -1,0 +1,39 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Mesh" path="res://cube.obj" id="1_cube_mesh"]
+[ext_resource type="Texture2D" path="res://cube.ppm" id="2_cube_texture"]
+[ext_resource type="Palette" path="res://cube.clut" id="3_cube_palette"]
+
+[sub_resource type="NBPS1Material" id="NBPS1Material_cube"]
+texture = ExtResource("2_cube_texture")
+palette = ExtResource("3_cube_palette")
+blend_mode = "none"
+shade_mode = "gouraud"
+
+[node name="Demo" type="Node3D"]
+
+[node name="MainCamera" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 5)
+fov = 60.0
+near = 0.1
+far = 100.0
+target = Vector3(0, 0, 0)
+up = Vector3(0, 1, 0)
+
+[node name="CubeA" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.7, 0, 0)
+rotation_deg = Vector3(0, 0, 0)
+mesh = ExtResource("1_cube_mesh")
+material = SubResource("NBPS1Material_cube")
+spin_speed = 0.8
+
+[node name="CubeB" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.7, 0, 0)
+rotation_deg = Vector3(0, 0, 0)
+mesh = ExtResource("1_cube_mesh")
+material = SubResource("NBPS1Material_cube")
+spin_speed = -0.5
+
+[node name="KeyLight" type="DirectionalLight3D" parent="."]
+direction = Vector3(0.4, 0.7, 1.0)
+intensity = 1.0
