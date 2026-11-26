@@ -1,3 +1,5 @@
+#include <stdlib.h>
+
 #include "render/color.h"
 #include "render/mesh.h"
 
@@ -8,6 +10,18 @@ void mesh_init(mesh_t* mesh, vertex_t* vertices, int vertex_count, triangle_t* t
 	mesh->vertex_count = vertex_count;
 	mesh->triangles = triangles;
 	mesh->triangle_count = triangle_count;
+}
+
+void mesh_destroy(mesh_t* mesh) {
+	if (!mesh) { return; }
+
+	free(mesh->vertices);
+	free(mesh->triangles);
+
+	mesh->vertices = NULL;
+	mesh->vertex_count = 0;
+	mesh->triangles = NULL;
+	mesh->triangle_count = 0;
 }
 
 static void set_face(vertex_t* vertices, int base, const vec3_t corners[4], uint16_t face_color) {

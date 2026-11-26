@@ -22,6 +22,6 @@ void image_free(image_t* image);
 int clut_load(const char* path, palette_t* palette);
 void clut_free(palette_t* palette);
 int image_quantize(const image_t* image, const palette_t* palette, texture_format_t format, uint8_t** pixels);
-int obj_load(const char* path, mesh_t* mesh, vertex_t* vertices, int vertex_capacity, triangle_t* triangles, int triangle_capacity);
+int obj_load(const char* path, mesh_t* mesh);
 
 #endif

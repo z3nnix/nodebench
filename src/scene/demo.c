@@ -13,9 +13,6 @@
 #include "resource/resource.h"
 #include "scene/demo.h"
 
-#define NB_DEMO_VERTEX_CAPACITY 64
-#define NB_DEMO_TRIANGLE_CAPACITY 64
-
 static const float pi = 3.14159265f;
 
 static void demo_configure_camera(renderer_t* renderer, const render_config_t* config, mat4_t* projection, mat4_t* view) {
@@ -70,15 +67,14 @@ int demo_run(int argc, char** argv) {
 	resource_store_init(&resources, config.texture_vram_limit);
 	resources_ready = 1;
 
-	vertex_t vertices[NB_DEMO_VERTEX_CAPACITY];
-	triangle_t triangles[NB_DEMO_TRIANGLE_CAPACITY];
 	mesh_t mesh;
-	if (!obj_load("assets/cube.obj", &mesh, vertices, NB_DEMO_VERTEX_CAPACITY, triangles, NB_DEMO_TRIANGLE_CAPACITY)) {
+	if (!obj_load("assets/cube.obj", &mesh)) {
 		fprintf(stderr, "failed to load assets/cube.obj\n");
 		goto cleanup;
 	}
 
 	mesh_id mesh_handle = resource_add_mesh(&resources, &mesh);
+	mesh_destroy(&mesh);
 	if (mesh_handle == NB_RESOURCE_INVALID_ID) {
 		fprintf(stderr, "failed to add mesh resource\n");
 		goto cleanup;
@@ -124,7 +120,7 @@ int demo_run(int argc, char** argv) {
 	material_t* loaded_material = resource_get_material(&resources, material_handle);
 	if (!loaded_mesh || !loaded_texture || !loaded_material) { goto cleanup; }
 
-	fprintf(stderr, "loaded mesh=%u texture=%u material=%u vram=%d\n", (unsigned)mesh_handle, (unsigned)texture_handle, (unsigned)material_handle, resource_vram_used(&resources));
+	fprintf(stderr, "loaded mesh=%u verts=%d tris=%d texture=%u material=%u vram=%d\n", (unsigned)mesh_handle, loaded_mesh->vertex_count, loaded_mesh->triangle_count, (unsigned)texture_handle, (unsigned)material_handle, resource_vram_used(&resources));
 
 	mat4_t projection;
 	mat4_t view;

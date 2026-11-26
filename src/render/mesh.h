@@ -26,6 +26,7 @@ typedef struct {
 } mesh_t;
 
 void mesh_init(mesh_t* mesh, vertex_t* vertices, int vertex_count, triangle_t* triangles, int triangle_count);
+void mesh_destroy(mesh_t* mesh);
 void mesh_create_cube(mesh_t* mesh, vertex_t* vertices, int vertex_capacity, triangle_t* triangles, int triangle_capacity, float size);
 
 #endif
