@@ -45,6 +45,14 @@ void draw_list_set_camera(draw_list_t* list, const mat4_t* view, const mat4_t* p
 }
 
 int draw_list_push(draw_list_t* list, const mesh_t* mesh, const texture_t* texture, const material_t* material, const mat4_t* model) {
+	if (!material) {
+		return 0;
+	}
+
+	return draw_list_push_ex(list, mesh, texture, material, model, material->vertex_color_tint);
+}
+
+int draw_list_push_ex(draw_list_t* list, const mesh_t* mesh, const texture_t* texture, const material_t* material, const mat4_t* model, vec3_t tint) {
 	if (!list || !mesh || !material || list->count >= NB_DRAW_LIST_MAX_COMMANDS) {
 		return 0;
 	}
@@ -53,6 +61,7 @@ int draw_list_push(draw_list_t* list, const mesh_t* mesh, const texture_t* textu
 	command->mesh = mesh;
 	command->texture = texture;
 	command->material = material;
+	command->tint = tint;
 
 	if (model) {
 		command->model = *model;

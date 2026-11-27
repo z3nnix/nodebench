@@ -1,52 +1,23 @@
 #include <stdlib.h>
 
 #include "core/engine.h"
-#include "core/input.h"
 #include "core/math.h"
 #include "render/color.h"
 #include "render/draw_list.h"
 #include "render/framebuffer.h"
 #include "render/renderer.h"
 #include "resource/resource.h"
-#include "scene/camera_controller.h"
 #include "scene/demo.h"
 #include "scene/loader_tscn.h"
 #include "scene/scene.h"
-
-#define NB_DEMO_SCENE_PATH "assets/scene.tscn"
 
 static const float pi = 3.14159265f;
 
 typedef struct {
 	scene_t scene;
 	draw_list_t draw_list;
-	camera_t camera;
-	camera_controller_t camera_controller;
 	int logged;
 } demo_scene_t;
-
-static camera_t demo_make_camera(engine_t* engine, const scene_t* scene) {
-	camera_t camera;
-
-	if (scene && scene->camera_count > 0) {
-		return scene->cameras[0];
-	}
-
-	camera.eye.x = 0.0f;
-	camera.eye.y = 0.0f;
-	camera.eye.z = 5.0f;
-	camera.target.x = 0.0f;
-	camera.target.y = 0.0f;
-	camera.target.z = 0.0f;
-	camera.up.x = 0.0f;
-	camera.up.y = 1.0f;
-	camera.up.z = 0.0f;
-	camera.fov = 60.0f;
-	camera.near_plane = engine->config.near_plane;
-	camera.far_plane = engine->config.far_plane;
-
-	return camera;
-}
 
 static void demo_configure_camera(engine_t* engine, draw_list_t* list, const camera_t* camera) {
 	float aspect = (float)engine->config.width / (float)engine->config.height;
@@ -84,9 +55,9 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 	draw_list_init(&runtime->draw_list);
 	runtime->logged = 0;
 
-	nb_result_t result = scene_load_tscn(NB_DEMO_SCENE_PATH, engine, &runtime->scene);
+	nb_result_t result = scene_load_tscn(engine->config.scene_path, engine, &runtime->scene);
 	if (result != NB_RESULT_OK) {
-		engine_log(engine, "failed to load %s: %s", NB_DEMO_SCENE_PATH, nb_error_string(result));
+		engine_log(engine, "failed to load %s: %s", engine->config.scene_path, nb_error_string(result));
 		scene_shutdown(&runtime->scene);
 		free(runtime);
 
@@ -117,11 +88,9 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 	wren_vm_init_instances(&engine->script_vm);
 
 	demo_configure_light(engine, &runtime->scene);
-	runtime->camera = demo_make_camera(engine, &runtime->scene);
-	camera_controller_init(&runtime->camera_controller, &runtime->camera);
 	*context = runtime;
 
-	engine_log(engine, "loaded scene=%s entities=%d meshes=%d cameras=%d lights=%d scripts=%d vram=%d", NB_DEMO_SCENE_PATH, runtime->scene.entity_count, runtime->scene.mesh_renderer_count, runtime->scene.camera_count, runtime->scene.light_count, scripts, resource_vram_used(&engine->resources));
+	engine_log(engine, "loaded scene=%s entities=%d meshes=%d cameras=%d lights=%d scripts=%d vram=%d", engine->config.scene_path, runtime->scene.entity_count, runtime->scene.mesh_renderer_count, runtime->scene.camera_count, runtime->scene.light_count, scripts, resource_vram_used(&engine->resources));
 
 	return NB_RESULT_OK;
 }
@@ -130,12 +99,6 @@ static void demo_scene_update(engine_t* engine, void* context, float dt) {
 	demo_scene_t* runtime = (demo_scene_t*)context;
 	if (!engine || !runtime) {
 		return;
-	}
-
-	if (input_was_pressed(&engine->input, NB_ACTION_CAMERA_MODE)) {
-		camera_mode_t mode = camera_controller_get_mode(&runtime->camera_controller);
-		camera_controller_set_mode(&runtime->camera_controller, mode == NB_CAMERA_MODE_FREE ? NB_CAMERA_MODE_ORBIT : NB_CAMERA_MODE_FREE);
-		engine_log(engine, "camera mode=%s", mode == NB_CAMERA_MODE_FREE ? "orbit" : "free");
 	}
 
 	if (!engine->paused) {
@@ -154,8 +117,6 @@ static void demo_scene_update(engine_t* engine, void* context, float dt) {
 		scene_update_world_transforms(scene);
 		scene_rebuild_cache(scene);
 	}
-
-	camera_controller_update(&runtime->camera_controller, &runtime->camera, &engine->input, dt);
 }
 
 static void demo_scene_render(engine_t* engine, void* context, float alpha) {
@@ -176,10 +137,22 @@ static void demo_scene_render(engine_t* engine, void* context, float alpha) {
 	draw_list_t* list = &runtime->draw_list;
 
 	draw_list_clear(list);
-	demo_configure_camera(engine, list, &runtime->camera);
+	camera_t* camera = scene_get_active_camera(scene);
+	camera_t fallback = { 0 };
+	if (!camera) {
+		fallback.eye = (vec3_t){ 0.0f, 0.0f, 5.0f };
+		fallback.target = (vec3_t){ 0.0f, 0.0f, 0.0f };
+		fallback.up = (vec3_t){ 0.0f, 1.0f, 0.0f };
+		fallback.fov = 60.0f;
+		fallback.near_plane = engine->config.near_plane;
+		fallback.far_plane = engine->config.far_plane;
+		camera = &fallback;
+	}
 
-	uint16_t background_top = rgb555_pack(6, 10, 22);
-	uint16_t background_bottom = rgb555_pack(18, 26, 44);
+	demo_configure_camera(engine, list, camera);
+
+	uint16_t background_top = rgb555_pack(engine->config.sky_top_rgb[0], engine->config.sky_top_rgb[1], engine->config.sky_top_rgb[2]);
+	uint16_t background_bottom = rgb555_pack(engine->config.sky_bottom_rgb[0], engine->config.sky_bottom_rgb[1], engine->config.sky_bottom_rgb[2]);
 	framebuffer_clear_gradient(&engine->framebuffer, background_top, background_bottom);
 
 	for (int i = 0; i < scene->mesh_renderer_count; i++) {
@@ -204,7 +177,13 @@ static void demo_scene_render(engine_t* engine, void* context, float alpha) {
 			model.m[j] = node->previous_world_matrix.m[j] + (node->world_matrix.m[j] - node->previous_world_matrix.m[j]) * alpha;
 		}
 
-		draw_list_push(list, mesh, texture, material, &model);
+		if (node->tint_enabled) {
+			draw_list_push_ex(list, mesh, texture, material, &model, node->tint);
+		}
+
+		else {
+			draw_list_push(list, mesh, texture, material, &model);
+		}
 	}
 
 	draw_list_sort(list);
@@ -237,10 +216,6 @@ static void demo_scene_reset(engine_t* engine, void* context) {
 	scene_update_world_transforms(scene);
 	scene_rebuild_cache(scene);
 	wren_vm_init_instances(&engine->script_vm);
-
-	runtime->camera = demo_make_camera(engine, scene);
-	camera_controller_reset(&runtime->camera_controller, &runtime->camera);
-	demo_configure_camera(engine, &runtime->draw_list, &runtime->camera);
 	demo_configure_light(engine, scene);
 }
 

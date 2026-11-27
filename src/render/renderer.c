@@ -266,9 +266,9 @@ static void renderer_draw_command(renderer_t* renderer, const draw_command_t* co
 		int color_b = 0;
 
 		rgb555_unpack(vertex->color, &color_r, &color_g, &color_b);
-		projected->r = (float)color_r * material->vertex_color_tint.x;
-		projected->g = (float)color_g * material->vertex_color_tint.y;
-		projected->b = (float)color_b * material->vertex_color_tint.z;
+		projected->r = (float)color_r * command->tint.x;
+		projected->g = (float)color_g * command->tint.y;
+		projected->b = (float)color_b * command->tint.z;
 
 		float distance = -view4.z;
 		float fog = 0.0f;
@@ -328,6 +328,9 @@ static void renderer_draw_command(renderer_t* renderer, const draw_command_t* co
 		float facing = vec3_dot(normal, light);
 		if (facing < 0.0f) { facing = 0.0f; }
 		float intensity = 0.35f + 0.65f * facing;
+		float intensity_r = intensity * config->light_color[0];
+		float intensity_g = intensity * config->light_color[1];
+		float intensity_b = intensity * config->light_color[2];
 
 		if (material->shade_mode == NB_SHADE_FLAT) {
 			v1.r = v0.r;
@@ -338,15 +341,15 @@ static void renderer_draw_command(renderer_t* renderer, const draw_command_t* co
 			v2.b = v0.b;
 		}
 
-		v0.r *= intensity;
-		v0.g *= intensity;
-		v0.b *= intensity;
-		v1.r *= intensity;
-		v1.g *= intensity;
-		v1.b *= intensity;
-		v2.r *= intensity;
-		v2.g *= intensity;
-		v2.b *= intensity;
+		v0.r *= intensity_r;
+		v0.g *= intensity_g;
+		v0.b *= intensity_b;
+		v1.r *= intensity_r;
+		v1.g *= intensity_g;
+		v1.b *= intensity_b;
+		v2.r *= intensity_r;
+		v2.g *= intensity_g;
+		v2.b *= intensity_b;
 
 		projected_triangle_t* target = &renderer->triangles[triangle_count];
 		target->v[0] = v0;
@@ -364,9 +367,9 @@ static void renderer_draw_command(renderer_t* renderer, const draw_command_t* co
 
 	if (config->wireframe_enabled) {
 		nb_blend_mode_t wire_blend = config->xray_enabled ? NB_BLEND_ADD : NB_BLEND_NONE;
-		float wire_r = 40.0f * material->vertex_color_tint.x;
-		float wire_g = 220.0f * material->vertex_color_tint.y;
-		float wire_b = 180.0f * material->vertex_color_tint.z;
+		float wire_r = 40.0f * command->tint.x;
+		float wire_g = 220.0f * command->tint.y;
+		float wire_b = 180.0f * command->tint.z;
 
 		for (int i = 0; i < triangle_count; i++) {
 			const projected_triangle_t* triangle = &renderer->triangles[i];

@@ -17,11 +17,11 @@ AUDIO_TEST_TARGET := $(BUILD_DIR)/test_audio
 TEST_OUTPUT := $(BUILD_DIR)/test_frame.ppm
 TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/core/config.o $(BUILD_DIR)/render/color.o $(BUILD_DIR)/render/texture.o $(BUILD_DIR)/render/mesh.o $(BUILD_DIR)/render/material.o $(BUILD_DIR)/render/draw_list.o $(BUILD_DIR)/render/framebuffer.o $(BUILD_DIR)/render/renderer.o
 SCENE_TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/scene/scene.o
-WREN_TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/core/log.o $(BUILD_DIR)/scene/scene.o $(BUILD_DIR)/script/wren_vm.o $(BUILD_DIR)/third_party/wren/wren.o $(BUILD_DIR)/resource/resource.o $(BUILD_DIR)/audio/audio.o $(BUILD_DIR)/audio/wav.o
+WREN_TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/core/log.o $(BUILD_DIR)/core/platform.o $(BUILD_DIR)/scene/scene.o $(BUILD_DIR)/physics/collision.o $(BUILD_DIR)/script/script.o $(BUILD_DIR)/script/wren_vm.o $(BUILD_DIR)/third_party/wren/wren.o $(BUILD_DIR)/resource/resource.o $(BUILD_DIR)/audio/audio.o $(BUILD_DIR)/audio/wav.o
 COLLISION_TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/scene/scene.o $(BUILD_DIR)/physics/collision.o
 AUDIO_TEST_LIB_OBJ := $(BUILD_DIR)/audio/audio.o $(BUILD_DIR)/audio/wav.o $(BUILD_DIR)/resource/resource.o
 
-.PHONY: all run test clean
+.PHONY: all run test assets smoke clean
 
 all: $(TARGET)
 
@@ -53,6 +53,12 @@ $(BUILD_DIR)/third_party/%.o: third_party/%.c
 
 run: all
 	./$(TARGET)
+
+assets:
+	python3 scripts/gen_kula_assets.py
+
+smoke: all
+	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 20s ./$(TARGET) --max_frames=60
 
 test: $(TEST_TARGET) $(SCENE_TEST_TARGET) $(WREN_TEST_TARGET) $(COLLISION_TEST_TARGET) $(AUDIO_TEST_TARGET)
 	./$(SCENE_TEST_TARGET)

@@ -49,6 +49,7 @@ typedef struct {
 	light_t light;
 	collider_t collider;
 	int has_collider;
+	int visible;
 } tscn_node_t;
 
 static void tscn_init_collider(collider_t* collider) {
@@ -256,12 +257,28 @@ static const char* tscn_resolve_path(const char* path) {
 			return buffer;
 		}
 
+		snprintf(buffer, sizeof(buffer), "examples/%s", relative);
+		file = fopen(buffer, "r");
+		if (file) {
+			fclose(file);
+
+			return buffer;
+		}
+
 		buffer[0] = '\0';
 
 		return buffer;
 	}
 
 	snprintf(buffer, sizeof(buffer), "assets/%s", path);
+	file = fopen(buffer, "r");
+	if (file) {
+		fclose(file);
+
+		return buffer;
+	}
+
+	snprintf(buffer, sizeof(buffer), "examples/%s", path);
 	file = fopen(buffer, "r");
 	if (file) {
 		fclose(file);
@@ -346,11 +363,16 @@ static int tscn_load_ext_resource(engine_t* engine, tscn_ext_resource_t* resourc
 
 	if (strcmp(resource->type, "AudioStreamWAV") == 0 || strcmp(resource->type, "AudioStream") == 0) {
 		audio_stream_t stream;
+		const char* name = resource->id;
 		if (!wav_load(path, &stream)) {
 			return 0;
 		}
 
-		resource->handle = resource_add_audio(&engine->resources, &stream, resource->id);
+		if (strncmp(name, "audio_", 6) == 0 && name[6] != '\0') {
+			name = name + 6;
+		}
+
+		resource->handle = resource_add_audio(&engine->resources, &stream, name);
 		audio_stream_free(&stream);
 
 		return resource->handle != NB_RESOURCE_INVALID_ID;
@@ -371,35 +393,42 @@ static void tscn_free_ext_resources(tscn_ext_resource_t* resources, int count) {
 	}
 }
 
-static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, tscn_ext_resource_t* ext_resources, int ext_count) {
+static int tscn_create_entities(engine_t* engine, scene_t* scene, tscn_node_t* nodes, int count, tscn_ext_resource_t* ext_resources, int ext_count) {
 	entity_id_t ids[NB_TSCN_MAX_NODES];
 
 	for (int i = 0; i < count; i++) {
 		tscn_node_t* node = &nodes[i];
 		entity_id_t id = scene_create_entity(scene);
 		if (id == NB_ENTITY_INVALID) {
+			engine_log(engine, "tscn entity overflow at node=%s", node->name);
 			return 0;
 		}
 
 		ids[i] = id;
 
 		if (!scene_set_node_name(scene, id, node->name)) {
+			engine_log(engine, "tscn name failed at node=%s", node->name);
 			return 0;
 		}
+
+		scene_set_node_visible(scene, id, node->visible);
 
 		if (node->script_ref_kind == 1) {
 			tscn_ext_resource_t* script_resource = tscn_find_ext(ext_resources, ext_count, node->script_ref);
 			if (!script_resource || script_resource->handle == NB_RESOURCE_INVALID_ID || !scene_add_script(scene, id, script_resource->handle, node->name)) {
+				engine_log(engine, "tscn script failed at node=%s", node->name);
 				return 0;
 			}
 		}
 
 		if (node->has_collider && !scene_add_collider(scene, id, node->collider)) {
+			engine_log(engine, "tscn collider failed at node=%s", node->name);
 			return 0;
 		}
 
 		if (strcmp(node->type, "Camera3D") == 0) {
 			if (node->has_transform && !scene_add_transform(scene, id, node->transform)) {
+				engine_log(engine, "tscn transform failed at node=%s", node->name);
 				return 0;
 			}
 
@@ -409,6 +438,7 @@ static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, t
 			}
 
 			if (!scene_add_camera(scene, id, camera)) {
+				engine_log(engine, "tscn camera failed at node=%s", node->name);
 				return 0;
 			}
 
@@ -427,6 +457,7 @@ static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, t
 			}
 
 			if (!mesh_resource || !material_resource || mesh_resource->handle == NB_RESOURCE_INVALID_ID || material_resource->handle == NB_RESOURCE_INVALID_ID) {
+				engine_log(engine, "tscn mesh resources failed at node=%s", node->name);
 				return 0;
 			}
 
@@ -435,6 +466,7 @@ static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, t
 			renderer.material = material_resource->handle;
 
 			if (!scene_add_transform(scene, id, node->transform) || !scene_add_mesh_renderer(scene, id, renderer)) {
+				engine_log(engine, "tscn mesh component failed at node=%s", node->name);
 				return 0;
 			}
 
@@ -443,6 +475,7 @@ static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, t
 
 		if (strcmp(node->type, "DirectionalLight3D") == 0) {
 			if (!scene_add_light(scene, id, node->light)) {
+				engine_log(engine, "tscn light failed at node=%s", node->name);
 				return 0;
 			}
 
@@ -450,6 +483,7 @@ static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, t
 		}
 
 		if (node->has_transform && strcmp(node->type, "Node3D") == 0 && !scene_add_transform(scene, id, node->transform)) {
+			engine_log(engine, "tscn transform failed at node=%s", node->name);
 			return 0;
 		}
 	}
@@ -462,6 +496,7 @@ static int tscn_create_entities(scene_t* scene, tscn_node_t* nodes, int count, t
 
 		entity_id_t parent = scene_find_node(scene, node->parent);
 		if (parent == NB_ENTITY_INVALID || !scene_set_node_parent(scene, ids[i], parent)) {
+			engine_log(engine, "tscn parent failed at node=%s parent=%s", node->name, node->parent);
 			return 0;
 		}
 	}
@@ -556,6 +591,7 @@ nb_result_t scene_load_tscn(const char* path, engine_t* engine, scene_t* scene) 
 				node->camera.up.y = 1.0f;
 				node->light.intensity = 1.0f;
 				node->light.direction.z = 1.0f;
+				node->visible = 1;
 				tscn_header_value(text, "name", node->name, sizeof(node->name));
 				tscn_header_value(text, "type", node->type, sizeof(node->type));
 				tscn_header_value(text, "parent", node->parent, sizeof(node->parent));
@@ -665,12 +701,16 @@ nb_result_t scene_load_tscn(const char* path, engine_t* engine, scene_t* scene) 
 				node->transform.spin_speed = strtof(value, NULL);
 				node->has_transform = 1;
 			}
+
+			else if (strcmp(key, "visible") == 0) {
+				node->visible = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
+			}
 		}
 	}
 
 	fclose(file);
 
-	if (result == NB_RESULT_OK && !tscn_create_entities(scene, nodes, node_count, ext_resources, ext_count)) {
+	if (result == NB_RESULT_OK && !tscn_create_entities(engine, scene, nodes, node_count, ext_resources, ext_count)) {
 		result = NB_RESULT_ERROR_SCENE;
 	}
 

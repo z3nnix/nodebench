@@ -1,9 +1,13 @@
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "core/engine.h"
 #include "core/input.h"
 #include "core/log.h"
+#include "physics/collision.h"
+#include "script/script.h"
 #include "script/wren_vm.h"
 #include "scene/scene.h"
 
@@ -22,6 +26,15 @@ static const char* wren_builtin_source =
 	"  foreign static remove_child(parent, child)\n"
 	"  foreign static find_child(parent, name)\n"
 	"  foreign static find_node(path)\n"
+	"  foreign static world_axis(id, component)\n"
+	"  foreign static visible(id)\n"
+	"  foreign static set_visible(id, value)\n"
+	"  foreign static look_at(id, x, y, z)\n"
+	"}\n"
+	"class CameraBridge {\n"
+	"  foreign static set(id, kind, x, y, z)\n"
+	"  foreign static set_scalar(id, kind, value)\n"
+	"  foreign static use(id)\n"
 	"}\n"
 	"class Vector3 {\n"
 	"  construct new(x, y, z) {\n"
@@ -106,6 +119,18 @@ static const char* wren_builtin_source =
 	"    return _scale\n"
 	"  }\n"
 	"  scale=(value) { NodeBridge.set(_id, 2, value.x, value.y, value.z) }\n"
+	"  world_position {\n"
+	"    return Vector3.new(NodeBridge.world_axis(_id, 0), NodeBridge.world_axis(_id, 1), NodeBridge.world_axis(_id, 2))\n"
+	"  }\n"
+	"  visible {\n"
+	"    return NodeBridge.visible(_id)\n"
+	"  }\n"
+	"  visible=(value) { NodeBridge.set_visible(_id, value) }\n"
+	"  tint {\n"
+	"    return Vector3.from_node(_id, 5)\n"
+	"  }\n"
+	"  tint=(value) { NodeBridge.set(_id, 5, value.x, value.y, value.z) }\n"
+	"  look_at(x, y, z) { NodeBridge.look_at(_id, x, y, z) }\n"
 	"  parent {\n"
 	"    var parent_id = NodeBridge.parent(_id)\n"
 	"    if (parent_id == 0) {\n"
@@ -150,10 +175,29 @@ static const char* wren_builtin_source =
 	"    }\n"
 	"    return null\n"
 	"  }\n"
+	"  init() { null }\n"
+	"  update(dt) { null }\n"
+	"  on_input(action) { null }\n"
+	"  on_collision(other) { null }\n"
+	"}\n"
+	"class Camera {\n"
+	"  static target(id) {\n"
+	"    return Vector3.from_node(id, 3)\n"
+	"  }\n"
+	"  static set_target(id, value) { CameraBridge.set(id, 3, value.x, value.y, value.z) }\n"
+	"  static set_up(id, value) { CameraBridge.set(id, 4, value.x, value.y, value.z) }\n"
+	"  static set_fov(id, value) { CameraBridge.set_scalar(id, 0, value) }\n"
+	"  static set_near(id, value) { CameraBridge.set_scalar(id, 1, value) }\n"
+	"  static set_far(id, value) { CameraBridge.set_scalar(id, 2, value) }\n"
+	"  static use(id) { CameraBridge.use(id) }\n"
 	"}\n"
 	"class Input {\n"
 	"  foreign static is_pressed(name)\n"
 	"  foreign static was_pressed(name)\n"
+	"  foreign static mouse_dx()\n"
+	"  foreign static mouse_dy()\n"
+	"  foreign static mouse_captured()\n"
+	"  foreign static set_mouse_captured(captured)\n"
 	"}\n"
 	"class Log {\n"
 	"  foreign static info(message)\n"
@@ -162,6 +206,22 @@ static const char* wren_builtin_source =
 	"}\n"
 	"class Audio {\n"
 	"  foreign static play(name)\n"
+	"  foreign static loop(name, volume)\n"
+	"  foreign static stop(name)\n"
+	"  foreign static set_volume(name, volume)\n"
+	"  foreign static stop_all()\n"
+	"}\n"
+	"class World {\n"
+	"  foreign static set_fog(near, far, r, g, b)\n"
+	"  foreign static set_sky(top_r, top_g, top_b, bottom_r, bottom_g, bottom_b)\n"
+	"  foreign static set_light(x, y, z, r, g, b)\n"
+	"  foreign static set_affine(value)\n"
+	"  foreign static set_dither(value)\n"
+	"  foreign static set_fog_enabled(value)\n"
+	"  foreign static time()\n"
+	"}\n"
+	"class Physics {\n"
+	"  foreign static move(id, dx, dy, dz, radius)\n"
 	"}\n";
 
 static wren_vm_t* wren_vm_from_wren(WrenVM* vm) {
@@ -297,6 +357,18 @@ static float* wren_vm_vector_from_kind(node_t* node, int kind) {
 		return &node->transform.scale.x;
 	}
 
+	if (kind == 3) {
+		return &node->camera.target.x;
+	}
+
+	if (kind == 4) {
+		return &node->camera.up.x;
+	}
+
+	if (kind == 5) {
+		return &node->tint.x;
+	}
+
 	return NULL;
 }
 
@@ -329,6 +401,9 @@ static void wren_vm_bridge_set_axis(WrenVM* vm) {
 	float* value = wren_vm_axis_from_kind(node, kind, axis);
 	if (value) {
 		*value = (float)wrenGetSlotDouble(vm, 4);
+		if (kind == 5 && node) {
+			node->tint_enabled = 1;
+		}
 	}
 }
 
@@ -345,6 +420,9 @@ static void wren_vm_bridge_set(WrenVM* vm) {
 	vector[0] = (float)wrenGetSlotDouble(vm, 3);
 	vector[1] = (float)wrenGetSlotDouble(vm, 4);
 	vector[2] = (float)wrenGetSlotDouble(vm, 5);
+	if (kind == 5 && node) {
+		node->tint_enabled = 1;
+	}
 	wrenSetSlotBool(vm, 0, true);
 }
 
@@ -422,25 +500,257 @@ static void wren_vm_bridge_find_node(WrenVM* vm) {
 	wrenSetSlotDouble(vm, 0, (double)id);
 }
 
-static void wren_vm_input_is_pressed(WrenVM* vm) {
-	wren_vm_t* state = wren_vm_from_wren(vm);
-	input_action_t action = NB_ACTION_COUNT;
-	int pressed = 0;
-	if (state && state->engine && input_action_from_name(wrenGetSlotString(vm, 1), &action)) {
-		pressed = input_is_held(&state->engine->input, action);
+static void wren_vm_bridge_world_axis(WrenVM* vm) {
+	node_t* node = wren_vm_node_from_slot(vm, 1);
+	int axis = (int)wrenGetSlotDouble(vm, 2);
+	float* vector = node ? &node->world_position.x : NULL;
+	float value = 0.0f;
+
+	if (vector && axis >= 0 && axis <= 2) {
+		value = vector[axis];
 	}
 
+	wrenSetSlotDouble(vm, 0, (double)value);
+}
+
+static void wren_vm_bridge_visible(WrenVM* vm) {
+	node_t* node = wren_vm_node_from_slot(vm, 1);
+	wrenSetSlotBool(vm, 0, node ? node->visible != 0 : false);
+}
+
+static void wren_vm_bridge_set_visible(WrenVM* vm) {
+	node_t* node = wren_vm_node_from_slot(vm, 1);
+	if (node) {
+		node->visible = wrenGetSlotBool(vm, 2) ? 1 : 0;
+	}
+}
+
+static void wren_vm_bridge_look_at(WrenVM* vm) {
+	node_t* node = wren_vm_node_from_slot(vm, 1);
+	if (!node) {
+		return;
+	}
+
+	float dx = (float)wrenGetSlotDouble(vm, 2) - node->world_position.x;
+	float dz = (float)wrenGetSlotDouble(vm, 4) - node->world_position.z;
+	node->transform.rotation.y = atan2f(dx, dz);
+}
+
+static void wren_vm_world_set_fog(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	if (!state || !state->engine) {
+		return;
+	}
+
+	render_config_t* config = &state->engine->config;
+	float near = (float)wrenGetSlotDouble(vm, 1);
+	float far = (float)wrenGetSlotDouble(vm, 2);
+	if (near < 0.0f) {
+		near = 0.0f;
+	}
+
+	if (far <= near) {
+		far = near + 0.001f;
+	}
+
+	config->fog_near = near;
+	config->fog_far = far;
+
+	for (int i = 0; i < 3; i++) {
+		int value = (int)wrenGetSlotDouble(vm, 3 + i);
+		if (value < 0) {
+			value = 0;
+		}
+
+		if (value > 255) {
+			value = 255;
+		}
+
+		config->fog_color_rgb[i] = value;
+	}
+}
+
+static void wren_vm_world_set_sky(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	if (!state || !state->engine) {
+		return;
+	}
+
+	render_config_t* config = &state->engine->config;
+	for (int i = 0; i < 3; i++) {
+		int top = (int)wrenGetSlotDouble(vm, 1 + i);
+		int bottom = (int)wrenGetSlotDouble(vm, 4 + i);
+		if (top < 0) {
+			top = 0;
+		}
+
+		if (top > 255) {
+			top = 255;
+		}
+
+		if (bottom < 0) {
+			bottom = 0;
+		}
+
+		if (bottom > 255) {
+			bottom = 255;
+		}
+
+		config->sky_top_rgb[i] = top;
+		config->sky_bottom_rgb[i] = bottom;
+	}
+}
+
+static void wren_vm_world_set_light(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	if (!state || !state->engine) {
+		return;
+	}
+
+	render_config_t* config = &state->engine->config;
+	for (int i = 0; i < 3; i++) {
+		config->light_direction[i] = (float)wrenGetSlotDouble(vm, 1 + i);
+		float color = (float)wrenGetSlotDouble(vm, 4 + i);
+		config->light_color[i] = color < 0.0f ? 0.0f : color;
+	}
+}
+
+static void wren_vm_world_set_affine(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	if (!state || !state->engine) {
+		return;
+	}
+
+	float value = (float)wrenGetSlotDouble(vm, 1);
+	if (value < 0.0f) {
+		value = 0.0f;
+	}
+
+	if (value > 1.0f) {
+		value = 1.0f;
+	}
+
+	state->engine->config.affine_strength = value;
+}
+
+static void wren_vm_world_set_dither(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	if (state && state->engine) {
+		state->engine->config.dither_enabled = wrenGetSlotBool(vm, 1) ? 1 : 0;
+	}
+}
+
+static void wren_vm_world_set_fog_enabled(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	if (state && state->engine) {
+		state->engine->config.fog_enabled = wrenGetSlotBool(vm, 1) ? 1 : 0;
+	}
+}
+
+static void wren_vm_world_time(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	wrenSetSlotDouble(vm, 0, state && state->engine ? (double)state->engine->clock.elapsed : 0.0);
+}
+
+static void wren_vm_physics_move(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	node_t* node = wren_vm_node_from_slot(vm, 1);
+	if (!state || !state->scene || !node) {
+		wrenSetSlotBool(vm, 0, false);
+
+		return;
+	}
+
+	vec3_t delta = {
+		(float)wrenGetSlotDouble(vm, 2),
+		(float)wrenGetSlotDouble(vm, 3),
+		(float)wrenGetSlotDouble(vm, 4)
+	};
+	float radius = (float)wrenGetSlotDouble(vm, 5);
+	vec3_t resolved = collision_move_sphere(state->scene, node->id, node->world_position, delta, radius);
+
+	node->transform.position.x += resolved.x - node->world_position.x;
+	node->transform.position.y += resolved.y - node->world_position.y;
+	node->transform.position.z += resolved.z - node->world_position.z;
+	wrenSetSlotBool(vm, 0, true);
+}
+
+static camera_t* wren_vm_camera_from_slot(WrenVM* vm) {
+	node_t* node = wren_vm_node_from_slot(vm, 1);
+	if (!node || !(node->components & NB_NODE_COMPONENT_CAMERA)) {
+		return NULL;
+	}
+
+	return &node->camera;
+}
+
+static void wren_vm_camera_set_scalar(WrenVM* vm) {
+	camera_t* camera = wren_vm_camera_from_slot(vm);
+	int kind = (int)wrenGetSlotDouble(vm, 2);
+	float value = (float)wrenGetSlotDouble(vm, 3);
+	if (camera) {
+		if (kind == 0) {
+			camera->fov = value;
+		}
+
+		else if (kind == 1) {
+			camera->near_plane = value;
+		}
+
+		else if (kind == 2) {
+			camera->far_plane = value;
+		}
+	}
+}
+
+static void wren_vm_camera_use(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	entity_id_t id = (entity_id_t)wrenGetSlotDouble(vm, 1);
+	int used = state && state->scene && scene_set_active_camera(state->scene, id);
+	wrenSetSlotBool(vm, 0, used ? true : false);
+}
+
+static void wren_vm_input_mouse_dx(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	int value = state && state->engine ? state->engine->input.mouse_dx : 0;
+	wrenSetSlotDouble(vm, 0, (double)value);
+}
+
+static void wren_vm_input_mouse_dy(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	int value = state && state->engine ? state->engine->input.mouse_dy : 0;
+	wrenSetSlotDouble(vm, 0, (double)value);
+}
+
+static void wren_vm_input_mouse_captured(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	int captured = state && state->engine ? platform_mouse_capture(&state->engine->platform) : 0;
+	wrenSetSlotBool(vm, 0, captured ? true : false);
+}
+
+static void wren_vm_input_set_mouse_captured(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	int captured = wrenGetSlotBool(vm, 1) ? 1 : 0;
+	if (state && state->engine) {
+		platform_set_mouse_capture(&state->engine->platform, captured);
+	}
+}
+
+static void wren_vm_input_is_pressed(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	int pressed = 0;
+	if (state && state->engine) {
+		pressed = input_is_held(&state->engine->input, wrenGetSlotString(vm, 1));
+	}
 	wrenSetSlotBool(vm, 0, pressed ? true : false);
 }
 
 static void wren_vm_input_was_pressed(WrenVM* vm) {
 	wren_vm_t* state = wren_vm_from_wren(vm);
-	input_action_t action = NB_ACTION_COUNT;
 	int pressed = 0;
-	if (state && state->engine && input_action_from_name(wrenGetSlotString(vm, 1), &action)) {
-		pressed = input_was_pressed(&state->engine->input, action);
+	if (state && state->engine) {
+		pressed = input_was_pressed(&state->engine->input, wrenGetSlotString(vm, 1));
 	}
-
 	wrenSetSlotBool(vm, 0, pressed ? true : false);
 }
 
@@ -479,6 +789,48 @@ static void wren_vm_audio_play(WrenVM* vm) {
 	wrenSetSlotBool(vm, 0, played ? true : false);
 }
 
+static void wren_vm_audio_loop(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	int played = 0;
+	if (state && state->engine && state->engine->audio_ready) {
+		const char* name = wrenGetSlotString(vm, 1);
+		float volume = (float)wrenGetSlotDouble(vm, 2);
+		audio_id id = resource_find_audio(&state->engine->resources, name);
+		if (id != NB_RESOURCE_INVALID_ID && audio_play_ex(&state->engine->audio, &state->engine->resources, id, volume, 1)) {
+			played = 1;
+		}
+	}
+
+	wrenSetSlotBool(vm, 0, played ? true : false);
+}
+
+static void wren_vm_audio_stop(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	int stopped = 0;
+	if (state && state->engine && state->engine->audio_ready) {
+		stopped = audio_stop(&state->engine->audio, &state->engine->resources, wrenGetSlotString(vm, 1));
+	}
+
+	wrenSetSlotBool(vm, 0, stopped ? true : false);
+}
+
+static void wren_vm_audio_set_volume(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	int updated = 0;
+	if (state && state->engine && state->engine->audio_ready) {
+		updated = audio_set_volume(&state->engine->audio, &state->engine->resources, wrenGetSlotString(vm, 1), (float)wrenGetSlotDouble(vm, 2));
+	}
+
+	wrenSetSlotBool(vm, 0, updated ? true : false);
+}
+
+static void wren_vm_audio_stop_all(WrenVM* vm) {
+	wren_vm_t* state = wren_vm_from_wren(vm);
+	if (state && state->engine && state->engine->audio_ready) {
+		audio_stop_all(&state->engine->audio);
+	}
+}
+
 static void wren_vm_write(WrenVM* vm, const char* text) {
 	wren_vm_t* state = wren_vm_from_wren(vm);
 	if (state && state->engine && text) {
@@ -510,13 +862,93 @@ static void wren_vm_error(WrenVM* vm, WrenErrorType type, const char* module, in
 	}
 }
 
+static void wren_vm_module_complete(WrenVM* vm, const char* name, WrenLoadModuleResult result) {
+	(void)vm;
+	(void)name;
+	if (result.source) {
+		free((void*)result.source);
+	}
+}
+
+static int wren_vm_file_exists(const char* path) {
+	FILE* file = fopen(path, "r");
+	if (!file) {
+		return 0;
+	}
+
+	fclose(file);
+
+	return 1;
+}
+
+static void wren_vm_scene_dir(const wren_vm_t* state, char* out, size_t size) {
+	const char* scene_path = "assets";
+	const char* slash;
+
+	if (!out || size == 0) {
+		return;
+	}
+
+	out[0] = '\0';
+	if (state && state->engine && state->engine->config.scene_path[0]) {
+		scene_path = state->engine->config.scene_path;
+	}
+
+	slash = strrchr(scene_path, '/');
+	if (!slash) {
+		snprintf(out, size, "assets");
+
+		return;
+	}
+
+	if ((size_t)(slash - scene_path) >= size) {
+		snprintf(out, size, "assets");
+
+		return;
+	}
+
+	memcpy(out, scene_path, (size_t)(slash - scene_path));
+	out[slash - scene_path] = '\0';
+}
+
 static WrenLoadModuleResult wren_vm_load_module(WrenVM* vm, const char* name) {
 	WrenLoadModuleResult result;
+	wren_vm_t* state = wren_vm_from_wren(vm);
 	memset(&result, 0, sizeof(result));
-	(void)vm;
-	if (name && strcmp(name, NB_WREN_MODULE) == 0) {
-		result.source = wren_builtin_source;
+	if (!name) {
+		return result;
 	}
+
+	if (strcmp(name, NB_WREN_MODULE) == 0) {
+		result.source = wren_builtin_source;
+
+		return result;
+	}
+
+	char path[512];
+	char* source = NULL;
+	if (strchr(name, '/') || strchr(name, '.')) {
+		snprintf(path, sizeof(path), "%s", name);
+		source = script_load_file(path);
+	}
+
+	else {
+		char scene_dir[256];
+		wren_vm_scene_dir(state, scene_dir, sizeof(scene_dir));
+		snprintf(path, sizeof(path), "%s/%s.wren", scene_dir, name);
+		if (!wren_vm_file_exists(path)) {
+			snprintf(path, sizeof(path), "assets/%s.wren", name);
+		}
+
+		source = script_load_file(path);
+	}
+
+	if (!source) {
+		return result;
+	}
+
+	result.source = source;
+	result.onComplete = wren_vm_module_complete;
 
 	return result;
 }
@@ -567,9 +999,63 @@ static WrenForeignMethodFn wren_vm_bind_method(WrenVM* vm, const char* module, c
 		if (strcmp(signature, "find_node(_)") == 0) {
 			return wren_vm_bridge_find_node;
 		}
+
+		if (strcmp(signature, "world_axis(_,_)") == 0) {
+			return wren_vm_bridge_world_axis;
+		}
+
+		if (strcmp(signature, "visible(_)") == 0) {
+			return wren_vm_bridge_visible;
+		}
+
+		if (strcmp(signature, "set_visible(_,_)") == 0) {
+			return wren_vm_bridge_set_visible;
+		}
+
+		if (strcmp(signature, "look_at(_,_,_,_)") == 0) {
+			return wren_vm_bridge_look_at;
+		}
+	}
+
+	if (strcmp(class_name, "CameraBridge") == 0 && is_static) {
+		if (strcmp(signature, "axis(_,_,_)") == 0) {
+			return wren_vm_bridge_axis;
+		}
+
+		if (strcmp(signature, "set_axis(_,_,_,_)") == 0) {
+			return wren_vm_bridge_set_axis;
+		}
+
+		if (strcmp(signature, "set(_,_,_,_,_)") == 0) {
+			return wren_vm_bridge_set;
+		}
+
+		if (strcmp(signature, "set_scalar(_,_,_)") == 0) {
+			return wren_vm_camera_set_scalar;
+		}
+
+		if (strcmp(signature, "use(_)") == 0) {
+			return wren_vm_camera_use;
+		}
 	}
 
 	if (strcmp(class_name, "Input") == 0 && is_static) {
+		if (strcmp(signature, "mouse_dx()") == 0) {
+			return wren_vm_input_mouse_dx;
+		}
+
+		if (strcmp(signature, "mouse_dy()") == 0) {
+			return wren_vm_input_mouse_dy;
+		}
+
+		if (strcmp(signature, "mouse_captured()") == 0) {
+			return wren_vm_input_mouse_captured;
+		}
+
+		if (strcmp(signature, "set_mouse_captured(_)") == 0) {
+			return wren_vm_input_set_mouse_captured;
+		}
+
 		if (strcmp(signature, "is_pressed(_)") == 0) {
 			return wren_vm_input_is_pressed;
 		}
@@ -593,8 +1079,60 @@ static WrenForeignMethodFn wren_vm_bind_method(WrenVM* vm, const char* module, c
 		}
 	}
 
-	if (strcmp(class_name, "Audio") == 0 && is_static && strcmp(signature, "play(_)") == 0) {
-		return wren_vm_audio_play;
+	if (strcmp(class_name, "Audio") == 0 && is_static) {
+		if (strcmp(signature, "play(_)") == 0) {
+			return wren_vm_audio_play;
+		}
+
+		if (strcmp(signature, "loop(_,_)") == 0) {
+			return wren_vm_audio_loop;
+		}
+
+		if (strcmp(signature, "stop(_)") == 0) {
+			return wren_vm_audio_stop;
+		}
+
+		if (strcmp(signature, "set_volume(_,_)") == 0) {
+			return wren_vm_audio_set_volume;
+		}
+
+		if (strcmp(signature, "stop_all()") == 0) {
+			return wren_vm_audio_stop_all;
+		}
+	}
+
+	if (strcmp(class_name, "World") == 0 && is_static) {
+		if (strcmp(signature, "set_fog(_,_,_,_,_)") == 0) {
+			return wren_vm_world_set_fog;
+		}
+
+		if (strcmp(signature, "set_sky(_,_,_,_,_,_)") == 0) {
+			return wren_vm_world_set_sky;
+		}
+
+		if (strcmp(signature, "set_light(_,_,_,_,_,_)") == 0) {
+			return wren_vm_world_set_light;
+		}
+
+		if (strcmp(signature, "set_affine(_)") == 0) {
+			return wren_vm_world_set_affine;
+		}
+
+		if (strcmp(signature, "set_dither(_)") == 0) {
+			return wren_vm_world_set_dither;
+		}
+
+		if (strcmp(signature, "set_fog_enabled(_)") == 0) {
+			return wren_vm_world_set_fog_enabled;
+		}
+
+		if (strcmp(signature, "time()") == 0) {
+			return wren_vm_world_time;
+		}
+	}
+
+	if (strcmp(class_name, "Physics") == 0 && is_static && strcmp(signature, "move(_,_,_,_,_)") == 0) {
+		return wren_vm_physics_move;
 	}
 
 	return NULL;

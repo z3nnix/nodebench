@@ -198,6 +198,19 @@ static int parse_log_level(const char* text, nb_log_level_t* out) {
 	return 0;
 }
 
+static void config_add_binding(render_config_t* config, const char* action, const char* keys) {
+	if (!config || !action || !keys || config->key_binding_count >= NB_CONFIG_BINDINGS_MAX) { return; }
+	for (int i = 0; i < config->key_binding_count; i++) {
+		if (strcmp(config->key_bindings[i].action, action) == 0) {
+			snprintf(config->key_bindings[i].keys, sizeof(config->key_bindings[i].keys), "%s", keys);
+			return;
+		}
+	}
+	nb_key_binding_t* b = &config->key_bindings[config->key_binding_count++];
+	snprintf(b->action, sizeof(b->action), "%s", action);
+	snprintf(b->keys, sizeof(b->keys), "%s", keys);
+}
+
 static int config_set_value(render_config_t* config, const char* key, const char* value) {
 	if (!config || !key || !value) { return 0; }
 
@@ -217,6 +230,10 @@ static int config_set_value(render_config_t* config, const char* key, const char
 
 	else if (strcmp(key, "fog_color") == 0) { return parse_vec3_ints(value, config->fog_color_rgb); }
 
+	else if (strcmp(key, "sky_top") == 0) { return parse_vec3_ints(value, config->sky_top_rgb); }
+
+	else if (strcmp(key, "sky_bottom") == 0) { return parse_vec3_ints(value, config->sky_bottom_rgb); }
+
 	else if (strcmp(key, "near_plane") == 0) { return parse_float(value, &config->near_plane); }
 
 	else if (strcmp(key, "far_plane") == 0) { return parse_float(value, &config->far_plane); }
@@ -235,6 +252,8 @@ static int config_set_value(render_config_t* config, const char* key, const char
 
 	else if (strcmp(key, "light_direction") == 0) { return parse_vec3_floats(value, config->light_direction); }
 
+	else if (strcmp(key, "light_color") == 0) { return parse_vec3_floats(value, config->light_color); }
+
 	else if (strcmp(key, "texture_vram_limit") == 0) { return parse_int(value, &config->texture_vram_limit); }
 
 	else if (strcmp(key, "wireframe_enabled") == 0) { return parse_bool(value, &config->wireframe_enabled); }
@@ -245,11 +264,19 @@ static int config_set_value(render_config_t* config, const char* key, const char
 
 	else if (strcmp(key, "hud_debug_enabled") == 0) { return parse_bool(value, &config->hud_debug_enabled); }
 
+	else if (strcmp(key, "max_frames") == 0) { return parse_int(value, &config->max_frames); }
+
 	else if (strcmp(key, "log_level") == 0) { return parse_log_level(value, &config->log_level); }
 
 	else if (strcmp(key, "log_file") == 0) {
 		if (strlen(value) >= sizeof(config->log_file)) { return 0; }
 		snprintf(config->log_file, sizeof(config->log_file), "%s", value);
+		return 1;
+	}
+
+	else if (strcmp(key, "scene_path") == 0) {
+		if (strlen(value) >= sizeof(config->scene_path)) { return 0; }
+		snprintf(config->scene_path, sizeof(config->scene_path), "%s", value);
 		return 1;
 	}
 
@@ -274,9 +301,14 @@ static int config_validate(const render_config_t* config) {
 	if (!config->dither_matrix) { return 0; }
 	if (config->subdivide_area_threshold < 0.0f) { return 0; }
 	if (config->texture_vram_limit < 0) { return 0; }
+	if (config->max_frames < 0) { return 0; }
+	if (!config->scene_path[0]) { return 0; }
 
 	for (int i = 0; i < 3; i++) {
 		if (config->fog_color_rgb[i] < 0 || config->fog_color_rgb[i] > 255) { return 0; }
+		if (config->sky_top_rgb[i] < 0 || config->sky_top_rgb[i] > 255) { return 0; }
+		if (config->sky_bottom_rgb[i] < 0 || config->sky_bottom_rgb[i] > 255) { return 0; }
+		if (config->light_color[i] < 0.0f) { return 0; }
 	}
 
 	return 1;
@@ -299,6 +331,12 @@ void render_config_init(render_config_t* config) {
 	config->fog_color_rgb[0] = 8;
 	config->fog_color_rgb[1] = 14;
 	config->fog_color_rgb[2] = 28;
+	config->sky_top_rgb[0] = 6;
+	config->sky_top_rgb[1] = 10;
+	config->sky_top_rgb[2] = 22;
+	config->sky_bottom_rgb[0] = 18;
+	config->sky_bottom_rgb[1] = 26;
+	config->sky_bottom_rgb[2] = 44;
 	config->dither_enabled = 1;
 	config->dither_matrix = bayer_4x4;
 	config->cull_backfaces = 1;
@@ -310,13 +348,19 @@ void render_config_init(render_config_t* config) {
 	config->light_direction[0] = 0.4f;
 	config->light_direction[1] = 0.7f;
 	config->light_direction[2] = 1.0f;
+	config->light_color[0] = 1.0f;
+	config->light_color[1] = 1.0f;
+	config->light_color[2] = 1.0f;
 	config->texture_vram_limit = 1024 * 1024;
 	config->wireframe_enabled = 0;
 	config->xray_enabled = 0;
-	config->hud_enabled = 1;
+	config->hud_enabled = 0;
 	config->hud_debug_enabled = 0;
+	config->max_frames = 0;
 	config->log_level = NB_LOG_INFO;
 	config->log_file[0] = '\0';
+	snprintf(config->scene_path, sizeof(config->scene_path), "%s", "examples/kula/scenes/level01.tscn");
+	config->key_binding_count = 0;
 }
 
 int config_load_file(render_config_t* config, const char* path) {
@@ -327,6 +371,7 @@ int config_load_file(render_config_t* config, const char* path) {
 
 	char line[256];
 	int line_number = 0;
+	int in_input = 0;
 
 	while (fgets(line, (int)sizeof(line), file)) {
 		line_number++;
@@ -334,14 +379,31 @@ int config_load_file(render_config_t* config, const char* path) {
 		char* comment = strchr(line, '#');
 		if (comment) { *comment = '\0'; }
 
-		char* equals = strchr(line, '=');
+		char* t = trim(line);
+		if (!*t) { continue; }
+		if (t[0] == '[') {
+			in_input = (strcmp(t, "[input]") == 0);
+			continue;
+		}
+
+		char* equals = strchr(t, '=');
 		if (!equals) { continue; }
 		*equals = '\0';
 
-		char* key = trim(line);
+		char* key = trim(t);
 		char* value = trim(equals + 1);
 
 		if (!*key || !*value) { continue; }
+
+		if (in_input) {
+			if (strlen(key) >= NB_CONFIG_BINDING_NAME_MAX || strlen(value) >= NB_CONFIG_BINDING_KEYS_MAX) {
+				fprintf(stderr, "%s:%d: invalid input binding: %s\n", path, line_number, key);
+				fclose(file);
+				return 0;
+			}
+			config_add_binding(config, key, value);
+			continue;
+		}
 
 		if (!config_set_value(config, key, value)) {
 			fprintf(stderr, "%s:%d: invalid key or value: %s\n", path, line_number, key);
@@ -430,6 +492,13 @@ int config_apply_cli(render_config_t* config, int argc, char** argv) {
 		char* clean_key = trim(key);
 		char* clean_value = trim(value);
 
+		if (strncmp(clean_key, "bind_", 5) == 0) {
+			const char* action = clean_key + 5;
+			if (!*action) { fprintf(stderr, "invalid option: %s\n", argv[i]); return 0; }
+			config_add_binding(config, action, clean_value);
+			continue;
+		}
+
 		if (!config_set_value(config, clean_key, clean_value)) {
 			fprintf(stderr, "invalid option: %s\n", argv[i]);
 			return 0;
@@ -452,12 +521,14 @@ void config_print_usage(const char* program) {
 	fprintf(stdout, "  virtual_resolution=320x240 vertex_snap_grid=320x240\n");
 	fprintf(stdout, "  affine_strength=0..1 color_depth=15 dithering=0|1\n");
 	fprintf(stdout, "  fog_enabled=0|1 fog_range=8,25 fog_color=8,14,28\n");
+	fprintf(stdout, "  sky_top=6,10,22 sky_bottom=18,26,44\n");
 	fprintf(stdout, "  near_plane=0.1 far_plane=100 cull_backfaces=0|1 reject_near_triangles=0|1\n");
 	fprintf(stdout, "  subdivide_large_triangles=0|1 subdivide_area_threshold=4096\n");
 	fprintf(stdout, "  blend_mode=none|alpha50|add|subtract|addquarter shade_mode=flat|gouraud\n");
-	fprintf(stdout, "  light_direction=0.4,0.7,1.0 texture_vram_limit=1048576\n");
+	fprintf(stdout, "  light_direction=0.4,0.7,1.0 light_color=1,1,1 texture_vram_limit=1048576\n");
 	fprintf(stdout, "  wireframe_enabled=0|1 xray_enabled=0|1\n");
-	fprintf(stdout, "  hud_enabled=0|1 hud_debug_enabled=0|1\n");
+	fprintf(stdout, "  hud_enabled=0|1 hud_debug_enabled=0|1 max_frames=0\n");
+	fprintf(stdout, "  scene_path=examples/kula/scenes/level01.tscn\n");
 	fprintf(stdout, "  log_level=debug|info|warn|error log_file=path\n");
 	fprintf(stdout, "hotkeys: 1 affine, 2 dither, 3 fog, 4 cull, 5 near-clip\n");
 	fprintf(stdout, "  p pause, f1 debug, f2 wireframe, f3 xray, f4 overlay, h hud\n");

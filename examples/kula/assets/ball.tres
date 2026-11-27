@@ -1,0 +1,13 @@
+[gd_resource type="NBPS1Material" load_steps=3 format=3]
+
+[ext_resource type="Texture2D" path="res://examples/kula/assets/ball.ppm" id="1_tex"]
+[ext_resource type="Palette" path="res://examples/kula/assets/hazard.clut" id="2_pal"]
+
+[resource]
+resource_name = "ball.tres"
+texture = ExtResource("1_tex")
+palette = ExtResource("2_pal")
+blend_mode = "none"
+shade_mode = "gouraud"
+fog_enabled = false
+vertex_color_tint = Color(1.0, 0.9, 0.9, 1)

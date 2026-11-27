@@ -24,5 +24,7 @@ typedef struct {
 void collision_state_init(collision_state_t* state);
 int collision_overlap(const collider_t* left, const node_t* left_node, const collider_t* right, const node_t* right_node);
 int collision_update(const scene_t* scene, collision_state_t* state, collision_events_t* events);
+int collision_sphere_blocked(const scene_t* scene, entity_id_t self, vec3_t position, float radius);
+vec3_t collision_move_sphere(const scene_t* scene, entity_id_t self, vec3_t position, vec3_t delta, float radius);
 
 #endif

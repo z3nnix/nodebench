@@ -25,6 +25,8 @@ typedef struct {
 	double position;
 	float volume;
 	int active;
+	int loop;
+	audio_id id;
 } audio_voice_t;
 
 typedef struct {
@@ -42,6 +44,9 @@ void audio_stream_free(audio_stream_t* stream);
 int audio_init(audio_system_t* audio);
 void audio_shutdown(audio_system_t* audio);
 int audio_play(audio_system_t* audio, resource_store_t* store, audio_id id, float volume);
+int audio_play_ex(audio_system_t* audio, resource_store_t* store, audio_id id, float volume, int loop);
+int audio_stop(audio_system_t* audio, resource_store_t* store, const char* name);
+int audio_set_volume(audio_system_t* audio, resource_store_t* store, const char* name, float volume);
 void audio_stop_all(audio_system_t* audio);
 
 #endif

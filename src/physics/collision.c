@@ -135,6 +135,77 @@ int collision_overlap(const collider_t* left, const node_t* left_node, const col
 	return collision_sphere_aabb_overlap(right_center, collision_collider_radius(right, right_node), left_center, &left_extents);
 }
 
+int collision_sphere_blocked(const scene_t* scene, entity_id_t self, vec3_t position, float radius) {
+	if (!scene || radius <= 0.0f) {
+		return 0;
+	}
+
+	for (int i = 0; i < scene->collider_count; i++) {
+		entity_id_t id = scene->collider_entities[i];
+		if (id == self) {
+			continue;
+		}
+
+		node_t* node = scene_get_node((scene_t*)scene, id);
+		if (!node || !node->world_visible) {
+			continue;
+		}
+
+		const collider_t* collider = &scene->colliders[i];
+
+		if (collider->shape == NB_COLLIDER_AABB) {
+			vec3_t extents = collision_collider_extents(collider, node);
+			float nearest_x = collision_clamp(position.x, node->world_position.x - extents.x, node->world_position.x + extents.x);
+			float nearest_z = collision_clamp(position.z, node->world_position.z - extents.z, node->world_position.z + extents.z);
+			float dx = position.x - nearest_x;
+			float dz = position.z - nearest_z;
+
+			if (dx * dx + dz * dz < radius * radius) {
+				return 1;
+			}
+		}
+
+		else if (collider->shape == NB_COLLIDER_SPHERE) {
+			float dx = position.x - node->world_position.x;
+			float dz = position.z - node->world_position.z;
+			float combined = radius + collision_collider_radius(collider, node);
+
+			if (dx * dx + dz * dz < combined * combined) {
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
+
+vec3_t collision_move_sphere(const scene_t* scene, entity_id_t self, vec3_t position, vec3_t delta, float radius) {
+	vec3_t result = position;
+
+	if (delta.y != 0.0f) {
+		vec3_t candidate = (vec3_t){ result.x, result.y + delta.y, result.z };
+		if (!collision_sphere_blocked(scene, self, candidate, radius)) {
+			result.y = candidate.y;
+		}
+	}
+
+	if (delta.x != 0.0f) {
+		vec3_t candidate = (vec3_t){ result.x + delta.x, result.y, result.z };
+		if (!collision_sphere_blocked(scene, self, candidate, radius)) {
+			result.x = candidate.x;
+		}
+	}
+
+	if (delta.z != 0.0f) {
+		vec3_t candidate = (vec3_t){ result.x, result.y, result.z + delta.z };
+		if (!collision_sphere_blocked(scene, self, candidate, radius)) {
+			result.z = candidate.z;
+		}
+	}
+
+	return result;
+}
+
 int collision_update(const scene_t* scene, collision_state_t* state, collision_events_t* events) {
 	if (!scene || !state || !events) {
 		return 0;

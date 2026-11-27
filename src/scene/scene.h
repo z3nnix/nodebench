@@ -7,7 +7,7 @@
 #define NB_ENTITY_INVALID 0
 #define NB_SCENE_MAX_ENTITIES 256
 #define NB_NODE_NAME_CAPACITY 64
-#define NB_NODE_MAX_CHILDREN 32
+#define NB_NODE_MAX_CHILDREN 128
 
 #define NB_NODE_COMPONENT_TRANSFORM 0x00000001u
 #define NB_NODE_COMPONENT_MESH_RENDERER 0x00000002u
@@ -74,6 +74,10 @@ typedef struct {
 	script_id script;
 	void* script_instance;
 	char script_module[NB_NODE_NAME_CAPACITY];
+	int visible;
+	int world_visible;
+	int tint_enabled;
+	vec3_t tint;
 	vec3_t world_position;
 	mat4_t world_matrix;
 	mat4_t previous_world_matrix;
@@ -97,6 +101,7 @@ typedef struct {
 	camera_t cameras[NB_SCENE_MAX_ENTITIES];
 	entity_id_t camera_entities[NB_SCENE_MAX_ENTITIES];
 	int camera_count;
+	entity_id_t active_camera;
 
 	light_t lights[NB_SCENE_MAX_ENTITIES];
 	entity_id_t light_entities[NB_SCENE_MAX_ENTITIES];
@@ -115,6 +120,9 @@ entity_id_t scene_find_node(scene_t* scene, const char* name);
 entity_id_t scene_find_node_path(scene_t* scene, const char* path);
 int scene_set_node_name(scene_t* scene, entity_id_t id, const char* name);
 int scene_set_node_parent(scene_t* scene, entity_id_t id, entity_id_t parent);
+int scene_set_node_visible(scene_t* scene, entity_id_t id, int visible);
+int scene_node_visible(scene_t* scene, entity_id_t id);
+int scene_set_node_tint(scene_t* scene, entity_id_t id, vec3_t tint);
 void scene_update_world_transforms(scene_t* scene);
 void scene_rebuild_cache(scene_t* scene);
 
@@ -124,10 +132,12 @@ int scene_add_camera(scene_t* scene, entity_id_t id, camera_t camera);
 int scene_add_light(scene_t* scene, entity_id_t id, light_t light);
 int scene_add_collider(scene_t* scene, entity_id_t id, collider_t collider);
 int scene_add_script(scene_t* scene, entity_id_t id, script_id script, const char* module);
+int scene_set_active_camera(scene_t* scene, entity_id_t id);
 
 transform_t* scene_get_transform(scene_t* scene, entity_id_t id);
 mesh_renderer_t* scene_get_mesh_renderer(scene_t* scene, entity_id_t id);
 camera_t* scene_get_camera(scene_t* scene, entity_id_t id);
+camera_t* scene_get_active_camera(scene_t* scene);
 light_t* scene_get_light(scene_t* scene, entity_id_t id);
 collider_t* scene_get_collider(scene_t* scene, entity_id_t id);
 

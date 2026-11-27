@@ -101,6 +101,19 @@ void mat4_rotate_y(mat4_t* out, float angle) {
 	out->m[10] = c;
 }
 
+void mat4_rotate_z(mat4_t* out, float angle) {
+	if (!out) { return; }
+
+	float c = cosf(angle);
+	float s = sinf(angle);
+
+	mat4_identity(out);
+	out->m[0] = c;
+	out->m[1] = s;
+	out->m[4] = -s;
+	out->m[5] = c;
+}
+
 vec4_t mat4_transform(const mat4_t* m, vec4_t v) {
 	vec4_t result = { 0.0f, 0.0f, 0.0f, 0.0f };
 

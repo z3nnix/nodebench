@@ -60,7 +60,13 @@ int main(void) {
 		return 0;
 	}
 
-	if (!audio_play(&audio, &store, id, 1.0f)) {
+	if (!audio_play(&audio, &store, id, 1.0f) || !audio_play_ex(&audio, &store, id, 0.5f, 1)) {
+		audio_shutdown(&audio);
+		resource_store_shutdown(&store);
+		return 1;
+	}
+
+	if (!audio_set_volume(&audio, &store, "hit", 0.25f) || !audio_stop(&audio, &store, "hit") || audio_stop(&audio, &store, "hit")) {
 		audio_shutdown(&audio);
 		resource_store_shutdown(&store);
 		return 1;

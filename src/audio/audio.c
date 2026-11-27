@@ -37,16 +37,29 @@ static void audio_callback(void* userdata, Uint8* stream, int length) {
 				continue;
 			}
 
-			int source_frame = (int)voice->position;
-			if (source_frame >= voice->frame_count) {
-				voice->active = 0;
-				continue;
+			if (voice->position >= (double)voice->frame_count) {
+				if (!voice->loop) {
+					voice->active = 0;
+					continue;
+				}
+
+				voice->position = 0.0;
 			}
+
+			int source_frame = (int)voice->position;
 
 			double ratio = (double)voice->sample_rate / (double)audio->spec.freq;
 			voice->position += ratio;
 			if (voice->position >= (double)voice->frame_count) {
-				voice->active = 0;
+				if (voice->loop) {
+					while (voice->position >= (double)voice->frame_count) {
+						voice->position -= (double)voice->frame_count;
+					}
+				}
+
+				else {
+					voice->active = 0;
+				}
 			}
 
 			int sample_index = source_frame * voice->channels;
@@ -110,6 +123,10 @@ void audio_shutdown(audio_system_t* audio) {
 }
 
 int audio_play(audio_system_t* audio, resource_store_t* store, audio_id id, float volume) {
+	return audio_play_ex(audio, store, id, volume, 0);
+}
+
+int audio_play_ex(audio_system_t* audio, resource_store_t* store, audio_id id, float volume, int loop) {
 	if (!audio || !audio->ready || !store) {
 		return 0;
 	}
@@ -156,9 +173,73 @@ int audio_play(audio_system_t* audio, resource_store_t* store, audio_id id, floa
 	audio->voices[slot].position = 0.0;
 	audio->voices[slot].volume = volume;
 	audio->voices[slot].active = 1;
+	audio->voices[slot].loop = loop ? 1 : 0;
+	audio->voices[slot].id = id;
 	SDL_UnlockAudioDevice(audio->device);
 
 	return 1;
+}
+
+int audio_stop(audio_system_t* audio, resource_store_t* store, const char* name) {
+	if (!audio || !audio->ready || !store || !name) {
+		return 0;
+	}
+
+	audio_id id = resource_find_audio(store, name);
+	if (id == NB_RESOURCE_INVALID_ID) {
+		return 0;
+	}
+
+	int stopped = 0;
+	SDL_LockAudioDevice(audio->device);
+	for (int i = 0; i < NB_AUDIO_MAX_VOICES; i++) {
+		audio_voice_t* voice = &audio->voices[i];
+		if (!voice->active || voice->id != id) {
+			continue;
+		}
+
+		voice->active = 0;
+		free(voice->samples);
+		voice->samples = NULL;
+		stopped = 1;
+	}
+	SDL_UnlockAudioDevice(audio->device);
+
+	return stopped;
+}
+
+int audio_set_volume(audio_system_t* audio, resource_store_t* store, const char* name, float volume) {
+	if (!audio || !audio->ready || !store || !name) {
+		return 0;
+	}
+
+	audio_id id = resource_find_audio(store, name);
+	if (id == NB_RESOURCE_INVALID_ID) {
+		return 0;
+	}
+
+	if (volume < 0.0f) {
+		volume = 0.0f;
+	}
+
+	else if (volume > 1.0f) {
+		volume = 1.0f;
+	}
+
+	int updated = 0;
+	SDL_LockAudioDevice(audio->device);
+	for (int i = 0; i < NB_AUDIO_MAX_VOICES; i++) {
+		audio_voice_t* voice = &audio->voices[i];
+		if (!voice->active || voice->id != id) {
+			continue;
+		}
+
+		voice->volume = volume;
+		updated = 1;
+	}
+	SDL_UnlockAudioDevice(audio->device);
+
+	return updated;
 }
 
 void audio_stop_all(audio_system_t* audio) {

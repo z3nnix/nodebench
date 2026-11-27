@@ -32,11 +32,13 @@ static void scene_node_local_matrix(const node_t* node, mat4_t* out) {
 	mat4_t translation;
 	mat4_t rotate_y;
 	mat4_t rotate_x;
+	mat4_t rotate_z;
 	mat4_t scale;
 
 	mat4_translate(&translation, node->transform.position.x, node->transform.position.y, node->transform.position.z);
 	mat4_rotate_y(&rotate_y, node->transform.rotation.y);
 	mat4_rotate_x(&rotate_x, node->transform.rotation.x);
+	mat4_rotate_z(&rotate_z, node->transform.rotation.z);
 	mat4_identity(&scale);
 	scale.m[0] = node->transform.scale.x;
 	scale.m[5] = node->transform.scale.y;
@@ -44,6 +46,7 @@ static void scene_node_local_matrix(const node_t* node, mat4_t* out) {
 
 	mat4_multiply(out, &translation, &rotate_y);
 	mat4_multiply(out, out, &rotate_x);
+	mat4_multiply(out, out, &rotate_z);
 	mat4_multiply(out, out, &scale);
 }
 
@@ -95,6 +98,10 @@ entity_id_t scene_create_entity(scene_t* scene) {
 	node->id = id;
 	node->parent = NB_ENTITY_INVALID;
 	node->transform.scale = (vec3_t){ 1.0f, 1.0f, 1.0f };
+	node->visible = 1;
+	node->world_visible = 1;
+	node->tint_enabled = 0;
+	node->tint = (vec3_t){ 1.0f, 1.0f, 1.0f };
 	snprintf(node->name, sizeof(node->name), "Node%d", id);
 	mat4_identity(&node->world_matrix);
 	mat4_identity(&node->previous_world_matrix);
@@ -224,6 +231,38 @@ int scene_set_node_parent(scene_t* scene, entity_id_t id, entity_id_t parent) {
 	return 1;
 }
 
+int scene_set_node_visible(scene_t* scene, entity_id_t id, int visible) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node) {
+		return 0;
+	}
+
+	node->visible = visible ? 1 : 0;
+
+	return 1;
+}
+
+int scene_node_visible(scene_t* scene, entity_id_t id) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node) {
+		return 0;
+	}
+
+	return node->world_visible;
+}
+
+int scene_set_node_tint(scene_t* scene, entity_id_t id, vec3_t tint) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node) {
+		return 0;
+	}
+
+	node->tint = tint;
+	node->tint_enabled = 1;
+
+	return 1;
+}
+
 void scene_update_world_transforms(scene_t* scene) {
 	if (!scene) {
 		return;
@@ -257,6 +296,7 @@ void scene_update_world_transforms(scene_t* scene) {
 			mat4_t local;
 			scene_node_local_matrix(node, &local);
 			node->previous_world_matrix = node->world_matrix;
+			node->world_visible = node->visible;
 
 			if (node->parent == NB_ENTITY_INVALID) {
 				node->world_matrix = local;
@@ -270,10 +310,16 @@ void scene_update_world_transforms(scene_t* scene) {
 
 				else {
 					mat4_multiply(&node->world_matrix, &parent->world_matrix, &local);
+					if (!parent->world_visible) {
+						node->world_visible = 0;
+					}
 				}
 			}
 
 			node->world_position = (vec3_t){ node->world_matrix.m[12], node->world_matrix.m[13], node->world_matrix.m[14] };
+			if ((node->components & NB_NODE_COMPONENT_CAMERA) && (node->components & NB_NODE_COMPONENT_TRANSFORM)) {
+				node->camera.eye = node->world_position;
+			}
 			updated[i] = 1;
 		}
 	}
@@ -299,7 +345,7 @@ void scene_rebuild_cache(scene_t* scene) {
 			scene->transform_count++;
 		}
 
-		if (node->components & NB_NODE_COMPONENT_MESH_RENDERER) {
+		if ((node->components & NB_NODE_COMPONENT_MESH_RENDERER) && node->world_visible) {
 			scene->mesh_renderers[scene->mesh_renderer_count] = node->mesh_renderer;
 			scene->mesh_renderer_entities[scene->mesh_renderer_count] = node->id;
 			scene->mesh_renderer_count++;
@@ -322,11 +368,19 @@ void scene_rebuild_cache(scene_t* scene) {
 			scene->light_count++;
 		}
 
-		if (node->components & NB_NODE_COMPONENT_COLLIDER) {
+		if ((node->components & NB_NODE_COMPONENT_COLLIDER) && node->world_visible) {
 			scene->colliders[scene->collider_count] = node->collider;
 			scene->collider_entities[scene->collider_count] = node->id;
 			scene->collider_count++;
 		}
+	}
+
+	if (scene->camera_count == 0) {
+		scene->active_camera = NB_ENTITY_INVALID;
+	}
+
+	else if (scene_find_component(scene->camera_entities, scene->camera_count, scene->active_camera) < 0) {
+		scene->active_camera = scene->camera_entities[0];
 	}
 }
 
@@ -418,6 +472,17 @@ int scene_add_script(scene_t* scene, entity_id_t id, script_id script, const cha
 	return 1;
 }
 
+int scene_set_active_camera(scene_t* scene, entity_id_t id) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node || !(node->components & NB_NODE_COMPONENT_CAMERA)) {
+		return 0;
+	}
+
+	scene->active_camera = id;
+
+	return 1;
+}
+
 transform_t* scene_get_transform(scene_t* scene, entity_id_t id) {
 	if (!scene) {
 		return NULL;
@@ -450,6 +515,19 @@ camera_t* scene_get_camera(scene_t* scene, entity_id_t id) {
 	}
 
 	int index = scene_find_component(scene->camera_entities, scene->camera_count, id);
+	if (index < 0) {
+		return NULL;
+	}
+
+	return &scene->cameras[index];
+}
+
+camera_t* scene_get_active_camera(scene_t* scene) {
+	if (!scene || scene->active_camera == NB_ENTITY_INVALID) {
+		return NULL;
+	}
+
+	int index = scene_find_component(scene->camera_entities, scene->camera_count, scene->active_camera);
 	if (index < 0) {
 		return NULL;
 	}

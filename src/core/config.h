@@ -3,6 +3,10 @@
 
 #include "core/log.h"
 
+#define NB_CONFIG_BINDINGS_MAX 128
+#define NB_CONFIG_BINDING_NAME_MAX 32
+#define NB_CONFIG_BINDING_KEYS_MAX 96
+
 typedef enum {
 	NB_BLEND_NONE,
 	NB_BLEND_ALPHA_50,
@@ -17,6 +21,11 @@ typedef enum {
 } nb_shade_mode_t;
 
 typedef struct {
+	char action[NB_CONFIG_BINDING_NAME_MAX];
+	char keys[NB_CONFIG_BINDING_KEYS_MAX];
+} nb_key_binding_t;
+
+typedef struct {
 	int width;
 	int height;
 	int snap_grid_width;
@@ -29,6 +38,8 @@ typedef struct {
 	float fog_near;
 	float fog_far;
 	int fog_color_rgb[3];
+	int sky_top_rgb[3];
+	int sky_bottom_rgb[3];
 	int dither_enabled;
 	const unsigned char* dither_matrix;
 	int cull_backfaces;
@@ -38,13 +49,18 @@ typedef struct {
 	nb_blend_mode_t blend_mode;
 	nb_shade_mode_t shade_mode;
 	float light_direction[3];
+	float light_color[3];
 	int texture_vram_limit;
 	int wireframe_enabled;
 	int xray_enabled;
 	int hud_enabled;
 	int hud_debug_enabled;
+	int max_frames;
 	nb_log_level_t log_level;
 	char log_file[256];
+	char scene_path[256];
+	nb_key_binding_t key_bindings[NB_CONFIG_BINDINGS_MAX];
+	int key_binding_count;
 } render_config_t;
 
 void render_config_init(render_config_t* config);

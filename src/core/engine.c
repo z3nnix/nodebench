@@ -48,6 +48,7 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 
 	if (!log_init(&engine->log, engine->config.log_file, engine->config.log_level)) { return NB_RESULT_ERROR_CONFIG; }
 	hud_init(&engine->hud);
+	input_init(&engine->input, &engine->config);
 
 	platform_desc_t platform_desc = { "NodeBench", engine->config.width, engine->config.height, 3, 0 };
 	if (!platform_init(&engine->platform, &platform_desc)) { return NB_RESULT_ERROR_PLATFORM; }
@@ -108,64 +109,64 @@ static void engine_apply_actions(engine_t* engine) {
 	input_state_t* input = &engine->input;
 	int changed = 0;
 
-	if (input_was_pressed(input, NB_ACTION_QUIT)) { input->quit = 1; }
+	if (input_was_pressed(input, "quit")) { input->quit = 1; }
 
-	if (input_was_pressed(input, NB_ACTION_PAUSE)) {
+	if (input_was_pressed(input, "pause")) {
 		engine->paused = !engine->paused;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_DEBUG_CYCLE)) {
+	if (input_was_pressed(input, "debug_cycle")) {
 		engine_cycle_debug(engine);
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_DEBUG_WIREFRAME)) {
+	if (input_was_pressed(input, "debug_wireframe")) {
 		engine->config.wireframe_enabled = !engine->config.wireframe_enabled;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_DEBUG_XRAY)) {
+	if (input_was_pressed(input, "debug_xray")) {
 		engine->config.xray_enabled = !engine->config.xray_enabled;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_HUD)) {
+	if (input_was_pressed(input, "hud")) {
 		engine->config.hud_enabled = !engine->config.hud_enabled;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_HUD_DEBUG)) {
+	if (input_was_pressed(input, "hud_debug")) {
 		engine->config.hud_debug_enabled = !engine->config.hud_debug_enabled;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_TOGGLE_AFFINE)) {
+	if (input_was_pressed(input, "toggle_affine")) {
 		engine->config.affine_strength = engine->config.affine_strength > 0.5f ? 0.0f : 1.0f;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_TOGGLE_DITHER)) {
+	if (input_was_pressed(input, "toggle_dither")) {
 		engine->config.dither_enabled = !engine->config.dither_enabled;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_TOGGLE_FOG)) {
+	if (input_was_pressed(input, "toggle_fog")) {
 		engine->config.fog_enabled = !engine->config.fog_enabled;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_TOGGLE_CULL)) {
+	if (input_was_pressed(input, "toggle_cull")) {
 		engine->config.cull_backfaces = !engine->config.cull_backfaces;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_TOGGLE_CLIP)) {
+	if (input_was_pressed(input, "toggle_clip")) {
 		engine->config.reject_near_triangles = !engine->config.reject_near_triangles;
 		changed = 1;
 	}
 
-	if (input_was_pressed(input, NB_ACTION_RESET) && engine->scene.reset) {
+	if (input_was_pressed(input, "reset") && engine->scene.reset) {
 		engine->scene.reset(engine, engine->scene.context);
 		collision_state_init(&engine->collisions);
 		audio_stop_all(&engine->audio);
@@ -181,9 +182,9 @@ void engine_update(engine_t* engine, float dt) {
 	engine_apply_actions(engine);
 
 	if (engine->script_vm_ready) {
-		for (int i = 0; i < (int)NB_ACTION_COUNT; i++) {
-			input_action_t action = (input_action_t)i;
-			if (input_was_pressed(&engine->input, action)) { wren_vm_on_input(&engine->script_vm, input_action_name(action)); }
+		for (int i = 0; i < input_action_count(&engine->input); i++) {
+			const char* action = input_action_at(&engine->input, i);
+			if (input_was_pressed(&engine->input, action)) { wren_vm_on_input(&engine->script_vm, action); }
 		}
 
 		if (!engine->paused) {
@@ -268,6 +269,7 @@ nb_result_t engine_run(int argc, char** argv) {
 
 	engine_log_state(&engine);
 
+	int frames = 0;
 	while (!engine.input.quit) {
 		float dt = platform_delta_time(&engine.platform);
 		if (dt > 0.25f) { dt = 0.25f; }
@@ -288,6 +290,11 @@ nb_result_t engine_run(int argc, char** argv) {
 		engine.clock.alpha = engine.clock.accumulator / NB_ENGINE_FIXED_STEP;
 		hud_update(&engine.hud, dt, engine.renderer.draw_calls, engine.renderer.drawn_triangles, engine.renderer.culled_triangles, engine.renderer.near_culled_triangles, resource_vram_used(&engine.resources));
 		engine_render(&engine, engine.clock.alpha);
+
+		frames++;
+		if (engine.config.max_frames > 0 && frames >= engine.config.max_frames) {
+			break;
+		}
 	}
 
 	engine_shutdown(&engine);

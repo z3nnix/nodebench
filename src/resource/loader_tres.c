@@ -175,12 +175,28 @@ static const char* tres_resolve_path(const char* path) {
 			return buffer;
 		}
 
+		snprintf(buffer, sizeof(buffer), "examples/%s", relative);
+		file = fopen(buffer, "r");
+		if (file) {
+			fclose(file);
+
+			return buffer;
+		}
+
 		buffer[0] = '\0';
 
 		return buffer;
 	}
 
 	snprintf(buffer, sizeof(buffer), "assets/%s", path);
+	file = fopen(buffer, "r");
+	if (file) {
+		fclose(file);
+
+		return buffer;
+	}
+
+	snprintf(buffer, sizeof(buffer), "examples/%s", path);
 	file = fopen(buffer, "r");
 	if (file) {
 		fclose(file);
@@ -306,6 +322,7 @@ material_id material_load_tres(engine_t* engine, const char* path) {
 	nb_blend_mode_t blend_mode = engine->config.blend_mode;
 	nb_shade_mode_t shade_mode = engine->config.shade_mode;
 	int fog_enabled = engine->config.fog_enabled;
+	int transparent_index = NB_TEXTURE_TRANSPARENT;
 	material_id result = NB_RESOURCE_INVALID_ID;
 	tres_section_t section = TRES_SECTION_OTHER;
 	char line[NB_TRES_LINE_CAPACITY];
@@ -398,6 +415,12 @@ material_id material_load_tres(engine_t* engine, const char* path) {
 				tint.z = colors[2];
 			}
 		}
+
+		else if (strcmp(key, "transparent_index") == 0) {
+			char index[32];
+			tres_parse_value(value, index, sizeof(index));
+			transparent_index = atoi(index);
+		}
 	}
 
 	fclose(file);
@@ -422,7 +445,7 @@ material_id material_load_tres(engine_t* engine, const char* path) {
 	}
 
 	texture_t texture;
-	texture_init(&texture, image_resource->image.width, image_resource->image.height, format, pixels, palette_resource->palette.colors, NB_TEXTURE_TRANSPARENT);
+	texture_init(&texture, image_resource->image.width, image_resource->image.height, format, pixels, palette_resource->palette.colors, transparent_index);
 
 	texture_id texture_id = resource_add_texture(&engine->resources, &texture);
 	free(pixels);

@@ -25,6 +25,7 @@ void mat4_look_at(mat4_t* out, vec3_t eye, vec3_t center, vec3_t up);
 void mat4_translate(mat4_t* out, float x, float y, float z);
 void mat4_rotate_x(mat4_t* out, float angle);
 void mat4_rotate_y(mat4_t* out, float angle);
+void mat4_rotate_z(mat4_t* out, float angle);
 vec4_t mat4_transform(const mat4_t* m, vec4_t v);
 vec3_t vec3_add(vec3_t a, vec3_t b);
 vec3_t vec3_sub(vec3_t a, vec3_t b);

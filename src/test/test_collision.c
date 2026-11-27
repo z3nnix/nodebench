@@ -73,6 +73,18 @@ int main(void) {
 		return 1;
 	}
 
+	vec3_t moved = collision_move_sphere(&scene, left, (vec3_t){ 0.0f, 0.0f, 0.0f }, (vec3_t){ 1.0f, 0.0f, 0.0f }, 0.2f);
+	if (moved.x != 0.0f || moved.z != 0.0f) {
+		scene_shutdown(&scene);
+		return 1;
+	}
+
+	moved = collision_move_sphere(&scene, left, (vec3_t){ 0.0f, 0.0f, 0.0f }, (vec3_t){ -1.0f, 0.0f, 0.5f }, 0.2f);
+	if (moved.x != -1.0f || moved.z != 0.5f) {
+		scene_shutdown(&scene);
+		return 1;
+	}
+
 	scene_shutdown(&scene);
 	printf("collision test ok\n");
 

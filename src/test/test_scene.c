@@ -55,6 +55,25 @@ int main(void) {
 		return 1;
 	}
 
+	if (!scene_set_node_visible(&scene, parent, 0)) {
+		return 1;
+	}
+
+	scene_update_world_transforms(&scene);
+	if (scene_node_visible(&scene, child) || scene_node_visible(&scene, parent)) {
+		return 1;
+	}
+
+	if (!scene_set_node_visible(&scene, parent, 1) || !scene_set_node_tint(&scene, child, (vec3_t){ 0.25f, 0.5f, 0.75f })) {
+		return 1;
+	}
+
+	scene_update_world_transforms(&scene);
+	node_t* tinted = scene_get_node(&scene, child);
+	if (!tinted || !tinted->tint_enabled || fabsf(tinted->tint.x - 0.25f) > 0.0001f || fabsf(tinted->tint.y - 0.5f) > 0.0001f || fabsf(tinted->tint.z - 0.75f) > 0.0001f) {
+		return 1;
+	}
+
 	if (scene.transform_count != 2) {
 		return 1;
 	}
