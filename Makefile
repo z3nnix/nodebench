@@ -14,6 +14,10 @@ SCENE_TEST_TARGET := $(BUILD_DIR)/test_scene
 WREN_TEST_TARGET := $(BUILD_DIR)/test_wren
 COLLISION_TEST_TARGET := $(BUILD_DIR)/test_collision
 AUDIO_TEST_TARGET := $(BUILD_DIR)/test_audio
+EDITOR_FS_TEST_TARGET := $(BUILD_DIR)/test_editor_fs
+EDITOR_FS_TEST_OBJ := $(BUILD_DIR)/test/test_editor_fs.o $(BUILD_DIR)/editor/editor_fs.o
+CONFIG_ROOT_TEST_TARGET := $(BUILD_DIR)/test_config_root
+CONFIG_ROOT_TEST_OBJ := $(BUILD_DIR)/test/test_config_root.o $(BUILD_DIR)/core/config.o
 TEST_OUTPUT := $(BUILD_DIR)/test_frame.ppm
 TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/core/config.o $(BUILD_DIR)/render/color.o $(BUILD_DIR)/render/texture.o $(BUILD_DIR)/render/mesh.o $(BUILD_DIR)/render/material.o $(BUILD_DIR)/render/draw_list.o $(BUILD_DIR)/render/framebuffer.o $(BUILD_DIR)/render/renderer.o
 SCENE_TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/scene/scene.o
@@ -43,6 +47,12 @@ $(COLLISION_TEST_TARGET): $(BUILD_DIR)/test/test_collision.o $(COLLISION_TEST_LI
 $(AUDIO_TEST_TARGET): $(BUILD_DIR)/test/test_audio.o $(AUDIO_TEST_LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+$(EDITOR_FS_TEST_TARGET): $(EDITOR_FS_TEST_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(CONFIG_ROOT_TEST_TARGET): $(CONFIG_ROOT_TEST_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
 $(BUILD_DIR)/%.o: src/%.c
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -60,8 +70,10 @@ assets:
 smoke: all
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 20s ./$(TARGET) --max_frames=60
 
-test: $(TEST_TARGET) $(SCENE_TEST_TARGET) $(WREN_TEST_TARGET) $(COLLISION_TEST_TARGET) $(AUDIO_TEST_TARGET)
+test: $(TEST_TARGET) $(SCENE_TEST_TARGET) $(WREN_TEST_TARGET) $(COLLISION_TEST_TARGET) $(AUDIO_TEST_TARGET) $(EDITOR_FS_TEST_TARGET) $(CONFIG_ROOT_TEST_TARGET)
 	./$(SCENE_TEST_TARGET)
+	./$(EDITOR_FS_TEST_TARGET)
+	./$(CONFIG_ROOT_TEST_TARGET)
 	./$(WREN_TEST_TARGET)
 	./$(COLLISION_TEST_TARGET)
 	./$(AUDIO_TEST_TARGET)
@@ -79,3 +91,5 @@ clean:
 
 -include $(DEP)
 -include $(TEST_OBJ:.o=.d)
+-include $(EDITOR_FS_TEST_OBJ:.o=.d)
+-include $(CONFIG_ROOT_TEST_OBJ:.o=.d)

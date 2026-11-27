@@ -1,8 +1,14 @@
+#define _XOPEN_SOURCE 700
+
 #include <ctype.h>
+#include <dirent.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "core/config.h"
 
@@ -23,6 +29,170 @@ static char* trim(char* text) {
 	*end = '\0';
 
 	return text;
+}
+
+static void config_join(char* out, size_t size, const char* a, const char* b) {
+	if (!out || size == 0) { return; }
+	size_t half = size / 2 - 1;
+	snprintf(out, size, "%.*s/%.*s", (int)half, a ? a : "", (int)half, b ? b : "");
+}
+
+static int config_dir_exists(const char* path) {
+	struct stat st;
+	return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static void config_dirname_into(const char* path, char* out, size_t size) {
+	if (!path || !out || size == 0) { return; }
+	const char* slash = strrchr(path, '/');
+	if (!slash || slash == path) {
+		snprintf(out, size, "/");
+		return;
+	}
+	size_t len = (size_t)(slash - path);
+	if (len >= size) { len = size - 1; }
+	memmove(out, path, len);
+	out[len] = '\0';
+}
+
+static int config_absolute_path(const char* path, char* out, size_t size) {
+	if (!path || !out || size == 0) { return 0; }
+	char resolved[PATH_MAX];
+	if (realpath(path, resolved)) {
+		snprintf(out, size, "%.*s", (int)size - 1, resolved);
+		return 1;
+	}
+	if (path[0] == '/') {
+		snprintf(out, size, "%.*s", (int)size - 1, path);
+		return 1;
+	}
+	char cwd[PATH_MAX];
+	if (!getcwd(cwd, sizeof(cwd))) { return 0; }
+	config_join(out, size, cwd, path);
+	return 1;
+}
+
+static int config_project_file(const char* dir, char* out, size_t size) {
+	char candidate[PATH_MAX];
+	config_join(candidate, sizeof(candidate), dir, "project.ini");
+	if (access(candidate, F_OK) != 0) { return 0; }
+	char abs[PATH_MAX];
+	if (!config_absolute_path(candidate, abs, sizeof(abs))) { return 0; }
+	config_dirname_into(abs, out, size);
+	return 1;
+}
+
+static int config_walk_up(const char* start, char* out, size_t size) {
+	char dir[PATH_MAX];
+	if (!config_absolute_path(start, dir, sizeof(dir))) { return 0; }
+	if (!config_dir_exists(dir)) { config_dirname_into(dir, dir, sizeof(dir)); }
+	while (1) {
+		if (config_project_file(dir, out, size)) { return 1; }
+		if (strcmp(dir, "/") == 0) { break; }
+		config_dirname_into(dir, dir, sizeof(dir));
+	}
+	return 0;
+}
+
+static int config_skip_scan_dir(const char* name) {
+	return strcmp(name, "build") == 0 || strcmp(name, "third_party") == 0 || strcmp(name, ".git") == 0 || strcmp(name, "node_modules") == 0;
+}
+
+static int config_name_compare(const void* a, const void* b) {
+	const char* lhs = *(const char* const*)a;
+	const char* rhs = *(const char* const*)b;
+	return strcmp(lhs, rhs);
+}
+
+static int config_scan_projects(const char* start, int depth, char* out, size_t size) {
+	if (config_project_file(start, out, size)) { return 1; }
+	if (depth <= 0) { return 0; }
+	DIR* handle = opendir(start);
+	if (!handle) { return 0; }
+	char* names[128];
+	int count = 0;
+	struct dirent* item = NULL;
+	while ((item = readdir(handle)) != NULL && count < 128) {
+		if (item->d_name[0] == '.' || config_skip_scan_dir(item->d_name)) { continue; }
+		char child[PATH_MAX];
+		config_join(child, sizeof(child), start, item->d_name);
+		if (!config_dir_exists(child)) { continue; }
+		names[count] = strdup(item->d_name);
+		if (names[count]) { count++; }
+	}
+	closedir(handle);
+	qsort(names, (size_t)count, sizeof(names[0]), config_name_compare);
+	int found_at = -1;
+	for (int i = 0; i < count; i++) {
+		char child[PATH_MAX];
+		config_join(child, sizeof(child), start, names[i]);
+		free(names[i]);
+		if (config_scan_projects(child, depth - 1, out, size)) {
+			found_at = i;
+			break;
+		}
+	}
+	int next = found_at >= 0 ? found_at + 1 : count;
+	for (int i = next; i < count; i++) { free(names[i]); }
+	return found_at >= 0;
+}
+
+static const char* config_find_arg_value(int argc, char** argv, const char* key) {
+	if (!argv || !key) { return NULL; }
+	char prefix[128];
+	char exact[128];
+	snprintf(prefix, sizeof(prefix), "--%s=", key);
+	snprintf(exact, sizeof(exact), "--%s", key);
+	size_t prefix_len = strlen(prefix);
+	for (int i = 1; i < argc; i++) {
+		if (!argv[i]) { continue; }
+		if (strncmp(argv[i], prefix, prefix_len) == 0) { return argv[i] + prefix_len; }
+		if (strcmp(argv[i], exact) == 0 && i + 1 < argc && argv[i + 1]) { return argv[i + 1]; }
+	}
+	return NULL;
+}
+
+int config_resolve_project_root(int argc, char** argv, char* out, size_t size) {
+	if (!out || size == 0) { return 0; }
+	const char* explicit = config_find_arg_value(argc, argv, "project");
+	if (!explicit) { explicit = config_find_arg_value(argc, argv, "project_root"); }
+	if (!explicit) { explicit = config_find_arg_value(argc, argv, "root"); }
+	if (explicit && *explicit) {
+		char abs[PATH_MAX];
+		if (config_absolute_path(explicit, abs, sizeof(abs))) {
+			if (config_dir_exists(abs)) {
+				snprintf(out, size, "%.*s", (int)size - 1, abs);
+				return 1;
+			}
+			char parent[PATH_MAX];
+			config_dirname_into(abs, parent, sizeof(parent));
+			if (config_walk_up(parent, out, size)) { return 1; }
+			snprintf(out, size, "%.*s", (int)size - 1, parent);
+			return 1;
+		}
+	}
+
+	char cwd[PATH_MAX];
+	if (getcwd(cwd, sizeof(cwd))) {
+		if (config_walk_up(cwd, out, size)) { return 1; }
+	}
+	char exe[PATH_MAX];
+	char exe_dir[PATH_MAX];
+	ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	if (len > 0) {
+		exe[len] = '\0';
+		config_dirname_into(exe, exe_dir, sizeof(exe_dir));
+		if (config_walk_up(exe_dir, out, size)) { return 1; }
+	}
+	if (getcwd(cwd, sizeof(cwd))) {
+		if (config_scan_projects(cwd, 3, out, size)) { return 1; }
+	}
+	if (len > 0 && config_scan_projects(exe_dir, 2, out, size)) { return 1; }
+	if (getcwd(cwd, sizeof(cwd))) {
+		snprintf(out, size, "%.*s", (int)size - 1, cwd);
+		return 1;
+	}
+	return 0;
 }
 
 static int parse_int(const char* text, int* out) {
@@ -289,8 +459,14 @@ static int config_set_value(render_config_t* config, const char* key, const char
 	}
 
 	else if (strcmp(key, "project_name") == 0) {
-		if (strlen(value) >= sizeof(config->project_name)) { return 0; }
+		if (!value[0] || strlen(value) >= sizeof(config->project_name)) { return 0; }
 		snprintf(config->project_name, sizeof(config->project_name), "%s", value);
+		return 1;
+	}
+
+	else if (strcmp(key, "project_root") == 0 || strcmp(key, "root") == 0 || strcmp(key, "project") == 0) {
+		if (!value[0] || strlen(value) >= sizeof(config->project_root)) { return 0; }
+		snprintf(config->project_root, sizeof(config->project_root), "%s", value);
 		return 1;
 	}
 
@@ -302,13 +478,6 @@ static int config_set_value(render_config_t* config, const char* key, const char
 	}
 
 	return 0;
-}
-
-static int file_exists(const char* path) {
-	FILE* file = fopen(path, "r");
-	if (!file) { return 0; }
-	fclose(file);
-	return 1;
 }
 
 static int config_validate(const render_config_t* config) {
@@ -385,6 +554,7 @@ void render_config_init(render_config_t* config) {
 	config->max_frames = 0;
 	config->log_level = NB_LOG_INFO;
 	config->log_file[0] = '\0';
+	config->project_root[0] = '\0';
 	snprintf(config->scene_path, sizeof(config->scene_path), "%s", "examples/kula/scenes/level01.tscn");
 	snprintf(config->project_name, sizeof(config->project_name), "%s", "Nodebench Project");
 	snprintf(config->mode, sizeof(config->mode), "%s", "game");
@@ -453,29 +623,12 @@ int config_load_file(render_config_t* config, const char* path) {
 int config_apply_cli(render_config_t* config, int argc, char** argv) {
 	if (!config) { return 0; }
 
-	const char* config_path = NULL;
-
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
 			config_print_usage(argv[0] ? argv[0] : "nodebench");
 			return 2;
 		}
-
-		if (strncmp(argv[i], "--config=", 9) == 0) {
-			config_path = argv[i] + 9;
-		}
-
-		else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-			config_path = argv[++i];
-		}
 	}
-
-	if (config_path && !file_exists(config_path)) {
-		fprintf(stderr, "config file not found: %s\n", config_path);
-		return 0;
-	}
-
-	if (config_path && !config_load_file(config, config_path)) { return 0; }
 
 	int skip_next = 0;
 
@@ -485,12 +638,12 @@ int config_apply_cli(render_config_t* config, int argc, char** argv) {
 			continue;
 		}
 
-		if (strcmp(argv[i], "--config") == 0) {
+		if (strcmp(argv[i], "--project") == 0 || strcmp(argv[i], "--project_root") == 0 || strcmp(argv[i], "--root") == 0) {
 			skip_next = 1;
 			continue;
 		}
 
-		if (strncmp(argv[i], "--config=", 9) == 0) { continue; }
+		if (strncmp(argv[i], "--project=", 10) == 0 || strncmp(argv[i], "--project_root=", 15) == 0 || strncmp(argv[i], "--root=", 7) == 0) { continue; }
 
 		if (strncmp(argv[i], "--", 2) != 0 || strlen(argv[i]) >= 384) {
 			fprintf(stderr, "unexpected argument: %s\n", argv[i]);
@@ -565,7 +718,7 @@ int config_apply_cli(render_config_t* config, int argc, char** argv) {
 void config_print_usage(const char* program) {
 	if (!program) { program = "nodebench"; }
 
-	fprintf(stdout, "usage: %s [--config=path] [--key=value]\n", program);
+	fprintf(stdout, "usage: %s [--project=path] [--key=value]\n", program);
 	fprintf(stdout, "keys:\n");
 	fprintf(stdout, "  virtual_resolution=320x240 window_resolution=1280x720 vertex_snap_grid=320x240\n");
 	fprintf(stdout, "  affine_strength=0..1 color_depth=15 dithering=0|1\n");
@@ -577,7 +730,7 @@ void config_print_usage(const char* program) {
 	fprintf(stdout, "  light_direction=0.4,0.7,1.0 light_color=1,1,1 texture_vram_limit=1048576\n");
 	fprintf(stdout, "  wireframe_enabled=0|1 xray_enabled=0|1\n");
 	fprintf(stdout, "  hud_enabled=0|1 hud_debug_enabled=0|1 editor_enabled=0|1 max_frames=0\n");
-	fprintf(stdout, "  mode=game|editor project_name=name scene|scene_path=path\n");
+	fprintf(stdout, "  mode=game|editor project_name=name project_root=path scene|scene_path=path\n");
 	fprintf(stdout, "  log_level=debug|info|warn|error log_file=path\n");
 	fprintf(stdout, "hotkeys: 1 affine, 2 dither, 3 fog, 4 cull, 5 near-clip\n");
 	fprintf(stdout, "  p pause, f1 debug, f2 wireframe, f3 xray, f4 overlay, h hud\n");

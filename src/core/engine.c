@@ -1,7 +1,12 @@
+#define _XOPEN_SOURCE 700
+
 #include <SDL2/SDL.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "core/engine.h"
 #include "editor/editor_app.h"
@@ -36,15 +41,130 @@ void engine_log(engine_t* engine, const char* format, ...) {
 	va_end(args);
 }
 
+static void engine_join(char* out, size_t size, const char* a, const char* b) {
+	if (!out || size == 0) { return; }
+	size_t half = size / 2 - 1;
+	snprintf(out, size, "%.*s/%.*s", (int)half, a ? a : "", (int)half, b ? b : "");
+}
+
+static char* engine_absolute_cli_value(const char* cwd, const char* value) {
+	if (!cwd || !value || !*value || value[0] == '/' || strncmp(value, "res://", 6) == 0) { return NULL; }
+	char candidate[PATH_MAX];
+	engine_join(candidate, sizeof(candidate), cwd, value);
+	if (access(candidate, F_OK) != 0) { return NULL; }
+	char resolved[PATH_MAX];
+	if (!realpath(candidate, resolved)) { return NULL; }
+	return strdup(resolved);
+}
+
+static int engine_is_path_key(const char* key) {
+	return strcmp(key, "scene") == 0 || strcmp(key, "scene_path") == 0 || strcmp(key, "project") == 0 || strcmp(key, "project_root") == 0 || strcmp(key, "root") == 0;
+}
+
+static void engine_prepare_cli_paths(int argc, char** argv, const char* cwd, char** args, char** owned, int owned_cap, int* owned_count) {
+	if (!argv || !args) { return; }
+	for (int i = 0; i < argc; i++) { args[i] = argv[i]; }
+	if (!owned || !owned_count) { return; }
+	for (int i = 1; i < argc; i++) {
+		if (!args[i]) { continue; }
+		const char* key = NULL;
+		const char* value = NULL;
+		int value_index = -1;
+		if (strncmp(args[i], "--scene=", 8) == 0) {
+			key = "scene";
+			value = args[i] + 8;
+		}
+		else if (strncmp(args[i], "--scene_path=", 13) == 0) {
+			key = "scene_path";
+			value = args[i] + 13;
+		}
+		else if (strncmp(args[i], "--project=", 10) == 0) {
+			key = "project";
+			value = args[i] + 10;
+		}
+		else if (strncmp(args[i], "--project_root=", 15) == 0) {
+			key = "project_root";
+			value = args[i] + 15;
+		}
+		else if (strncmp(args[i], "--root=", 7) == 0) {
+			key = "root";
+			value = args[i] + 7;
+		}
+		else if (i + 1 < argc && args[i + 1] && args[i + 1][0] != '-') {
+			const char* exact = args[i];
+			if (strcmp(exact, "--scene") == 0 || strcmp(exact, "--scene_path") == 0 || strcmp(exact, "--project") == 0 || strcmp(exact, "--project_root") == 0 || strcmp(exact, "--root") == 0) {
+				key = exact + 2;
+				value = args[i + 1];
+				value_index = i + 1;
+			}
+		}
+		if (!key || !engine_is_path_key(key) || !value) { continue; }
+		char* absolute = engine_absolute_cli_value(cwd, value);
+		if (!absolute || *owned_count >= owned_cap) {
+			free(absolute);
+			continue;
+		}
+		if (value_index >= 0) {
+			args[value_index] = absolute;
+		}
+		else {
+			size_t size = strlen(key) + strlen(absolute) + 4;
+			char* combined = (char*)malloc(size);
+			if (!combined) {
+				free(absolute);
+				continue;
+			}
+			snprintf(combined, size, "--%s=%s", key, absolute);
+			free(absolute);
+			args[i] = combined;
+			absolute = combined;
+		}
+		owned[(*owned_count)++] = absolute;
+	}
+}
+
 nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	if (!engine) { return NB_RESULT_ERROR_INVALID_ARGUMENT; }
 
 	memset(engine, 0, sizeof(*engine));
 
 	render_config_init(&engine->config);
-	if (!config_load_file(&engine->config, "config.ini")) { return NB_RESULT_ERROR_CONFIG; }
 
-	int cli_status = config_apply_cli(&engine->config, argc, argv);
+	char original_cwd[PATH_MAX];
+	if (!getcwd(original_cwd, sizeof(original_cwd))) { snprintf(original_cwd, sizeof(original_cwd), "."); }
+	char** args = (char**)malloc((size_t)(argc + 1) * sizeof(char*));
+	char* owned[64];
+	int owned_count = 0;
+	if (args) {
+		args[argc] = NULL;
+		engine_prepare_cli_paths(argc, argv, original_cwd, args, owned, 64, &owned_count);
+	}
+	else { args = argv; }
+
+	char root[PATH_MAX];
+	root[0] = '\0';
+	config_resolve_project_root(argc, args, root, sizeof(root));
+	if (root[0] && chdir(root) != 0) {
+		fprintf(stderr, "warning: cannot enter project root: %s\n", root);
+		root[0] = '\0';
+	}
+	if (!root[0]) { getcwd(root, sizeof(root)); }
+	snprintf(engine->config.project_root, sizeof(engine->config.project_root), "%.*s", (int)sizeof(engine->config.project_root) - 1, root);
+
+	char config_path[PATH_MAX];
+	engine_join(config_path, sizeof(config_path), root, "project.ini");
+	if (access(config_path, F_OK) != 0) {
+		fprintf(stderr, "warning: project.ini not found; using defaults\n");
+	}
+	if (!config_load_file(&engine->config, "project.ini")) {
+		for (int i = 0; i < owned_count; i++) { free(owned[i]); }
+		if (args != argv) { free(args); }
+		return NB_RESULT_ERROR_CONFIG;
+	}
+
+	int cli_status = config_apply_cli(&engine->config, argc, args);
+	for (int i = 0; i < owned_count; i++) { free(owned[i]); }
+	if (args != argv) { free(args); }
 	if (cli_status == 2) { return NB_RESULT_HELP; }
 	if (cli_status == 0) { return NB_RESULT_ERROR_CONFIG; }
 

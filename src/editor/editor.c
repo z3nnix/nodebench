@@ -1,4 +1,7 @@
+#define _XOPEN_SOURCE 700
+
 #include <SDL2/SDL.h>
+#include <limits.h>
 #include <math.h>
 #include <signal.h>
 #include <spawn.h>
@@ -11,6 +14,7 @@
 
 #include "editor/editor.h"
 #include "core/engine.h"
+#include "editor/editor_app.h"
 #include "scene/scene_doc.h"
 
 extern char** environ;
@@ -93,7 +97,7 @@ static void editor_hierarchy_reset_drag(editor_t* editor) {
 
 static void editor_hierarchy_clear_state(editor_t* editor) {
 	if (!editor) { return; }
-	memset(editor->hierarchy_expanded, 0, sizeof(editor->hierarchy_expanded));
+	memset(editor->hierarchy_expanded, 1, sizeof(editor->hierarchy_expanded));
 	editor->hierarchy_filter[0] = '\0';
 	editor->hierarchy_context_entity = NB_ENTITY_INVALID;
 	editor->rename_entity = NB_ENTITY_INVALID;
@@ -235,6 +239,1339 @@ static int editor_save_scene(editor_t* editor, engine_t* engine) {
 	return 0;
 }
 
+static void editor_tab_store(editor_t* editor, engine_t* engine, editor_scene_tab_t* tab) {
+	if (!editor || !tab) { return; }
+	const char* path = editor_scene_path(editor, engine);
+	snprintf(tab->path, sizeof(tab->path), "%s", path ? path : "");
+	editor_fs_basename(tab->path, tab->name, sizeof(tab->name));
+	for (int i = 0; i < 3; i++) { tab->camera_pos[i] = editor->camera_pos[i]; }
+	tab->camera_yaw = editor->camera_yaw;
+	tab->camera_pitch = editor->camera_pitch;
+	tab->selected_entity = editor->selected_entity;
+	tab->hierarchy_scroll_x = editor->hierarchy_scroll_x;
+	tab->hierarchy_scroll_y = editor->hierarchy_scroll_y;
+	memcpy(tab->hierarchy_expanded, editor->hierarchy_expanded, sizeof(tab->hierarchy_expanded));
+	tab->dirty = engine && engine->scene_doc.dirty ? 1 : 0;
+}
+
+static void editor_tab_load(editor_t* editor, const editor_scene_tab_t* tab) {
+	if (!editor || !tab) { return; }
+	editor_hierarchy_clear_state(editor);
+	for (int i = 0; i < 3; i++) { editor->camera_pos[i] = tab->camera_pos[i]; }
+	editor->camera_yaw = tab->camera_yaw;
+	editor->camera_pitch = tab->camera_pitch;
+	editor->selected_entity = tab->selected_entity;
+	editor->hierarchy_scroll_x = tab->hierarchy_scroll_x;
+	editor->hierarchy_scroll_y = tab->hierarchy_scroll_y;
+	memcpy(editor->hierarchy_expanded, tab->hierarchy_expanded, sizeof(editor->hierarchy_expanded));
+	snprintf(editor->scene_path, sizeof(editor->scene_path), "%.*s", (int)sizeof(editor->scene_path) - 1, tab->path);
+}
+
+static void editor_tab_init(editor_scene_tab_t* tab, const char* path, const editor_t* editor) {
+	if (!tab) { return; }
+	memset(tab, 0, sizeof(*tab));
+	memset(tab->hierarchy_expanded, 1, sizeof(tab->hierarchy_expanded));
+	snprintf(tab->path, sizeof(tab->path), "%s", path ? path : "");
+	editor_fs_basename(tab->path, tab->name, sizeof(tab->name));
+	if (editor) {
+		for (int i = 0; i < 3; i++) { tab->camera_pos[i] = editor->camera_pos[i]; }
+		tab->camera_yaw = editor->camera_yaw;
+		tab->camera_pitch = editor->camera_pitch;
+	}
+	else {
+		tab->camera_pos[0] = 0.0f;
+		tab->camera_pos[1] = 3.0f;
+		tab->camera_pos[2] = 6.0f;
+		tab->camera_yaw = -1.5707963f;
+		tab->camera_pitch = -0.35f;
+	}
+	tab->selected_entity = NB_ENTITY_INVALID;
+}
+
+static int editor_tab_find(const editor_t* editor, const char* path) {
+	if (!editor || !path) { return -1; }
+	for (int i = 0; i < editor->tab_count; i++) {
+		if (strcmp(editor->tabs[i].path, path) == 0) { return i; }
+	}
+	return -1;
+}
+
+static void editor_scene_state_reset(editor_t* editor) {
+	if (!editor) { return; }
+	editor_history_clear(editor);
+	editor->has_pre_edit = 0;
+	memset(&editor->pre_edit, 0, sizeof(editor->pre_edit));
+	editor->inspector_editing = 0;
+	editor->inspector_name_entity = NB_ENTITY_INVALID;
+	editor->rename_entity = NB_ENTITY_INVALID;
+	editor->reparent_source = NB_ENTITY_INVALID;
+	editor->reparent_open = 0;
+}
+
+static void editor_open_scene_now(editor_t* editor, engine_t* engine, const char* path) {
+	if (!editor || !engine || !path || !*path) { return; }
+	int existing = editor_tab_find(editor, path);
+	int index = existing;
+	if (index < 0) {
+		index = editor->tab_count < NB_EDITOR_SCENE_TABS_MAX ? editor->tab_count : editor->active_tab;
+	}
+	if (editor->tab_count > 0 && editor->active_tab >= 0 && editor->active_tab < editor->tab_count) {
+		editor_tab_store(editor, engine, &editor->tabs[editor->active_tab]);
+	}
+	if (existing == editor->active_tab && existing >= 0) { return; }
+	nb_result_t result = editor_app_open_scene(engine, path);
+	if (result != NB_RESULT_OK) {
+		char msg[256];
+		snprintf(msg, sizeof(msg), "open scene failed: %s", nb_error_string(result));
+		editor_set_status(editor, msg);
+		return;
+	}
+	if (index >= editor->tab_count) { editor->tab_count = index + 1; }
+	editor_tab_init(&editor->tabs[index], path, editor);
+	editor->active_tab = index;
+	editor_scene_state_reset(editor);
+	editor_tab_load(editor, &editor->tabs[index]);
+	editor_fix_selection(editor, engine);
+	snprintf(editor->scene_path, sizeof(editor->scene_path), "%s", path);
+	editor_set_status(editor, "scene opened");
+}
+
+static void editor_switch_tab_now(editor_t* editor, engine_t* engine, int index) {
+	if (!editor || !engine || index < 0 || index >= editor->tab_count || index == editor->active_tab) { return; }
+	if (editor->active_tab >= 0 && editor->active_tab < editor->tab_count) {
+		editor_tab_store(editor, engine, &editor->tabs[editor->active_tab]);
+	}
+	editor_scene_tab_t target = editor->tabs[index];
+	nb_result_t result = editor_app_open_scene(engine, target.path);
+	if (result != NB_RESULT_OK) {
+		editor_set_status(editor, "scene switch failed");
+		return;
+	}
+	editor->active_tab = index;
+	editor->tabs[index] = target;
+	editor_scene_state_reset(editor);
+	editor_tab_load(editor, &editor->tabs[index]);
+	editor_fix_selection(editor, engine);
+	editor_set_status(editor, "scene switched");
+}
+
+static void editor_close_tab_now(editor_t* editor, engine_t* engine, int index) {
+	if (!editor || !engine || index < 0 || index >= editor->tab_count) { return; }
+	if (editor->tab_count <= 1) {
+		editor_set_status(editor, "cannot close last scene tab");
+		return;
+	}
+	int old_active = editor->active_tab;
+	if (index == old_active) {
+		editor_tab_store(editor, engine, &editor->tabs[index]);
+	}
+	for (int i = index; i < editor->tab_count - 1; i++) {
+		editor->tabs[i] = editor->tabs[i + 1];
+	}
+	editor->tab_count--;
+	if (index == old_active) {
+		int next = index;
+		if (next >= editor->tab_count) { next = editor->tab_count - 1; }
+		editor_scene_tab_t target = editor->tabs[next];
+		nb_result_t result = editor_app_open_scene(engine, target.path);
+		if (result != NB_RESULT_OK) {
+			editor_set_status(editor, "scene close failed");
+			return;
+		}
+		editor->active_tab = next;
+		editor_scene_state_reset(editor);
+		editor_tab_load(editor, &editor->tabs[next]);
+		editor_fix_selection(editor, engine);
+	}
+	else if (index < old_active) {
+		editor->active_tab = old_active - 1;
+	}
+	editor_set_status(editor, "scene tab closed");
+}
+
+static void editor_dialog_open_discard(editor_t* editor, const char* path, int target, const char* text) {
+	if (!editor) { return; }
+	editor->dialog_kind = NB_EDITOR_DIALOG_DISCARD;
+	editor->dialog_target = target;
+	snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", path ? path : "");
+	editor->dialog_dst[0] = '\0';
+	snprintf(editor->dialog_title, sizeof(editor->dialog_title), "Unsaved Scene");
+	snprintf(editor->dialog_text, sizeof(editor->dialog_text), "%s", text ? text : "Scene has unsaved changes.");
+}
+
+static void editor_request_open_scene(editor_t* editor, engine_t* engine, const char* path) {
+	if (!editor || !engine || !path || !*path) { return; }
+	if (engine->scene_doc.dirty) {
+		char text[256];
+		snprintf(text, sizeof(text), "Save changes before opening '%s'?", path);
+		editor_dialog_open_discard(editor, path, -3, text);
+		return;
+	}
+	editor_open_scene_now(editor, engine, path);
+}
+
+static void editor_request_switch_tab(editor_t* editor, engine_t* engine, int index) {
+	if (!editor || !engine || index < 0 || index >= editor->tab_count || index == editor->active_tab) { return; }
+	if (engine->scene_doc.dirty) {
+		char text[256];
+		snprintf(text, sizeof(text), "Save changes before switching to '%s'?", editor->tabs[index].name);
+		editor_dialog_open_discard(editor, editor->tabs[index].path, index, text);
+		return;
+	}
+	editor_switch_tab_now(editor, engine, index);
+}
+
+static void editor_request_close_tab(editor_t* editor, engine_t* engine, int index) {
+	if (!editor || !engine || index < 0 || index >= editor->tab_count) { return; }
+	if (index == editor->active_tab && engine->scene_doc.dirty) {
+		char text[256];
+		snprintf(text, sizeof(text), "Save changes before closing '%s'?", editor->tabs[index].name);
+		editor_dialog_open_discard(editor, editor->tabs[index].path, -2, text);
+		return;
+	}
+	editor_close_tab_now(editor, engine, index);
+}
+
+static void editor_dialog_apply_discard(editor_t* editor, engine_t* engine, int save) {
+	if (!editor || !engine) { return; }
+	char path[NB_EDITOR_FS_PATH_MAX];
+	snprintf(path, sizeof(path), "%s", editor->dialog_path);
+	int target = editor->dialog_target;
+	editor->dialog_kind = NB_EDITOR_DIALOG_NONE;
+	editor->dialog_target = 0;
+	if (save) {
+		if (!editor_save_scene(editor, engine)) { return; }
+		if (editor->active_tab >= 0 && editor->active_tab < editor->tab_count) { editor->tabs[editor->active_tab].dirty = 0; }
+	}
+	engine->scene_doc.dirty = 0;
+	if (target == -3) { editor_open_scene_now(editor, engine, path); }
+	else if (target == -2) { editor_close_tab_now(editor, engine, editor->active_tab); }
+	else if (target >= 0) { editor_switch_tab_now(editor, engine, target); }
+}
+
+static void editor_fs_join_into(char* out, size_t size, const char* dir, const char* name) {
+	size_t half = size / 2 - 1;
+	snprintf(out, size, "%.*s/%.*s", (int)half, dir ? dir : ".", (int)half, name ? name : "");
+}
+
+static void editor_explorer_refresh(editor_t* editor) {
+	if (!editor) { return; }
+	editor->explorer.file_count = editor_fs_list_dir(editor->explorer.current_dir, editor->explorer.files, NB_EDITOR_FS_MAX_ENTRIES, editor->explorer.show_hidden);
+	editor->explorer.files_scroll_x = 0;
+	editor->explorer.files_scroll_y = 0;
+}
+
+static void editor_explorer_history_reset(editor_t* editor) {
+	if (!editor) { return; }
+	editor->explorer.history_count = 0;
+	editor->explorer.history_index = 0;
+	snprintf(editor->explorer.history[0], NB_EDITOR_FS_PATH_MAX, "%.*s", NB_EDITOR_FS_PATH_MAX - 1, editor->explorer.current_dir);
+	editor->explorer.history_count = 1;
+}
+
+static void editor_explorer_navigate(editor_t* editor, int delta) {
+	if (!editor) { return; }
+	int target = editor->explorer.history_index + delta;
+	if (target < 0 || target >= editor->explorer.history_count) { return; }
+	editor->explorer.history_index = target;
+	snprintf(editor->explorer.current_dir, sizeof(editor->explorer.current_dir), "%s", editor->explorer.history[target]);
+	editor->explorer.selected_path[0] = '\0';
+	editor_explorer_refresh(editor);
+}
+
+static void editor_explorer_enter(editor_t* editor, const char* path) {
+	if (!editor || !path || !*path || !editor_fs_is_dir(path)) { return; }
+	if (strcmp(editor->explorer.current_dir, path) != 0) {
+		if (editor->explorer.history_index + 1 < editor->explorer.history_count &&
+			strcmp(editor->explorer.history[editor->explorer.history_index + 1], path) == 0) {
+			editor->explorer.history_index++;
+		}
+		else {
+			if (editor->explorer.history_index + 1 >= NB_EDITOR_EXPLORER_HISTORY_MAX) {
+				memmove(&editor->explorer.history[0], &editor->explorer.history[1],
+					sizeof(editor->explorer.history) - NB_EDITOR_FS_PATH_MAX);
+				editor->explorer.history_count = NB_EDITOR_EXPLORER_HISTORY_MAX - 1;
+				editor->explorer.history_index = editor->explorer.history_count - 1;
+			}
+			else {
+				editor->explorer.history_count = editor->explorer.history_index + 1;
+			}
+			snprintf(editor->explorer.history[editor->explorer.history_count], NB_EDITOR_FS_PATH_MAX,
+				"%.*s", NB_EDITOR_FS_PATH_MAX - 1, path);
+			editor->explorer.history_count++;
+			editor->explorer.history_index = editor->explorer.history_count - 1;
+		}
+	}
+	snprintf(editor->explorer.current_dir, sizeof(editor->explorer.current_dir), "%.*s", (int)sizeof(editor->explorer.current_dir) - 1, path);
+	editor->explorer.selected_path[0] = '\0';
+	editor_explorer_refresh(editor);
+}
+
+static int editor_explorer_is_expanded(const editor_t* editor, const char* path) {
+	if (!editor || !path) { return 0; }
+	for (int i = 0; i < editor->explorer.expanded_count; i++) {
+		if (strcmp(editor->explorer.expanded[i], path) == 0) { return 1; }
+	}
+	return 0;
+}
+
+static void editor_explorer_toggle_expanded(editor_t* editor, const char* path) {
+	if (!editor || !path) { return; }
+	for (int i = 0; i < editor->explorer.expanded_count; i++) {
+		if (strcmp(editor->explorer.expanded[i], path) == 0) {
+			for (int j = i; j < editor->explorer.expanded_count - 1; j++) {
+				memmove(editor->explorer.expanded[j], editor->explorer.expanded[j + 1], NB_EDITOR_FS_PATH_MAX);
+			}
+			editor->explorer.expanded_count--;
+			return;
+		}
+	}
+	if (editor->explorer.expanded_count < NB_EDITOR_EXPLORER_TREE_MAX) {
+		snprintf(editor->explorer.expanded[editor->explorer.expanded_count++], NB_EDITOR_FS_PATH_MAX, "%.*s", NB_EDITOR_FS_PATH_MAX - 1, path);
+	}
+}
+
+static int editor_explorer_path_matches(const char* path, const char* prefix) {
+	if (!path || !prefix) { return 0; }
+	if (strcmp(path, prefix) == 0) { return 1; }
+	size_t len = strlen(prefix);
+	return strncmp(path, prefix, len) == 0 && path[len] == '/';
+}
+
+static void editor_explorer_after_path_change(editor_t* editor, engine_t* engine, const char* old_path, const char* new_path) {
+	if (!editor || !engine || !old_path || !new_path) { return; }
+	char old_prefix[NB_EDITOR_FS_PATH_MAX];
+	char new_prefix[NB_EDITOR_FS_PATH_MAX];
+	editor_fs_join_into(old_prefix, sizeof(old_prefix), old_path, "");
+	editor_fs_join_into(new_prefix, sizeof(new_prefix), new_path, "");
+	int active_changed = 0;
+	for (int i = 0; i < editor->tab_count; i++) {
+		editor_scene_tab_t* tab = &editor->tabs[i];
+		int affected = 0;
+		char updated[NB_EDITOR_FS_PATH_MAX];
+		if (strcmp(tab->path, old_path) == 0) {
+			snprintf(updated, sizeof(updated), "%.*s", (int)sizeof(updated) - 1, new_path);
+			affected = 1;
+		}
+		else if (strncmp(tab->path, old_prefix, strlen(old_prefix)) == 0) {
+			snprintf(updated, sizeof(updated), "%s%s", new_prefix, tab->path + strlen(old_prefix));
+			affected = 1;
+		}
+		if (!affected) { continue; }
+		snprintf(tab->path, sizeof(tab->path), "%.*s", (int)sizeof(tab->path) - 1, updated);
+		editor_fs_basename(tab->path, tab->name, sizeof(tab->name));
+		if (i == editor->active_tab) { active_changed = 1; }
+	}
+	if (active_changed && editor->active_tab >= 0 && editor->active_tab < editor->tab_count) {
+		editor_scene_tab_t target = editor->tabs[editor->active_tab];
+		if (editor_app_open_scene(engine, target.path) == NB_RESULT_OK) {
+			editor_scene_state_reset(editor);
+			editor_tab_load(editor, &target);
+			editor_fix_selection(editor, engine);
+			snprintf(engine->config.scene_path, sizeof(engine->config.scene_path), "%.*s", (int)sizeof(engine->config.scene_path) - 1, target.path);
+		}
+	}
+}
+
+static void editor_explorer_save_if_dirty(editor_t* editor, engine_t* engine) {
+	if (!editor || !engine) { return; }
+	if (engine->scene_doc.dirty) { editor_save_scene(editor, engine); }
+}
+
+static void editor_explorer_activate(editor_t* editor, engine_t* engine, const char* path) {
+	if (!editor || !engine || !path || !*path) { return; }
+	if (editor_fs_is_dir(path)) {
+		editor_explorer_enter(editor, path);
+		return;
+	}
+	if (strcmp(editor_fs_ext(path), "tscn") == 0) {
+		editor_request_open_scene(editor, engine, path);
+		return;
+	}
+	char msg[256];
+	snprintf(msg, sizeof(msg), "selected: %s", path);
+	editor_set_status(editor, msg);
+}
+
+static void editor_explorer_copy_path(const char* path) {
+	if (!path || !*path) { return; }
+	SDL_SetClipboardText(path);
+}
+
+static void editor_explorer_commit_rename(editor_t* editor, engine_t* engine) {
+	if (!editor || !engine) { return; }
+	const char* name = editor->explorer.rename_buffer;
+	int open = editor->explorer.rename_open;
+	editor->explorer.rename_open = 0;
+	if (!open || !*name) { return; }
+	char src[NB_EDITOR_FS_PATH_MAX];
+	char dir[NB_EDITOR_FS_PATH_MAX];
+	char dst[NB_EDITOR_FS_PATH_MAX];
+	snprintf(src, sizeof(src), "%s", editor->explorer.rename_path);
+	editor_fs_dirname(src, dir, sizeof(dir));
+	editor_fs_join_into(dst, sizeof(dst), dir, name);
+	if (strcmp(src, dst) == 0) { return; }
+	if (!editor_fs_is_inside(editor->explorer.root, dst)) {
+		editor_set_status(editor, "rename failed: path outside project");
+		return;
+	}
+	if (editor_fs_exists(dst)) {
+		editor_set_status(editor, "rename failed: path exists");
+		return;
+	}
+	editor_explorer_save_if_dirty(editor, engine);
+	if (!editor_fs_move_path(src, dst)) {
+		editor_set_status(editor, "rename failed");
+		return;
+	}
+	editor_fs_rewrite_refs(src, dst);
+	editor_explorer_after_path_change(editor, engine, src, dst);
+	snprintf(editor->explorer.selected_path, sizeof(editor->explorer.selected_path), "%s", dst);
+	editor_explorer_refresh(editor);
+	editor_set_status(editor, "renamed");
+}
+
+static void editor_explorer_duplicate(editor_t* editor, engine_t* engine, const char* path) {
+	if (!editor || !engine || !path || !*path) { return; }
+	char dir[NB_EDITOR_FS_PATH_MAX];
+	char base[NB_EDITOR_FS_NAME_MAX];
+	char copy_name[NB_EDITOR_FS_NAME_MAX * 2];
+	char dst[NB_EDITOR_FS_PATH_MAX];
+	editor_fs_dirname(path, dir, sizeof(dir));
+	editor_fs_basename(path, base, sizeof(base));
+	snprintf(copy_name, sizeof(copy_name), "%s.copy", base);
+	editor_fs_join_into(dst, sizeof(dst), dir, copy_name);
+	if (!editor_fs_is_inside(editor->explorer.root, dst) || editor_fs_exists(dst)) {
+		editor_set_status(editor, "duplicate failed: path exists or outside project");
+		return;
+	}
+	if (!editor_fs_copy_path(path, dst)) {
+		editor_set_status(editor, "duplicate failed");
+		return;
+	}
+	editor_explorer_refresh(editor);
+	editor_set_status(editor, "duplicated");
+}
+
+static void editor_explorer_perform_delete(editor_t* editor, engine_t* engine) {
+	if (!editor || !engine) { return; }
+	char path[NB_EDITOR_FS_PATH_MAX];
+	snprintf(path, sizeof(path), "%s", editor->dialog_path);
+	editor->dialog_kind = NB_EDITOR_DIALOG_NONE;
+	if (!editor_fs_is_inside(editor->explorer.root, path)) {
+		editor_set_status(editor, "delete failed: path outside project");
+		return;
+	}
+	const char* active = editor_scene_path(editor, engine);
+	if (editor_explorer_path_matches(active, path)) {
+		editor_set_status(editor, "delete failed: scene is open");
+		return;
+	}
+	editor_explorer_save_if_dirty(editor, engine);
+	if (!editor_fs_delete_path(path)) {
+		editor_set_status(editor, "delete failed");
+		return;
+	}
+	editor_fs_rewrite_refs(path, "");
+	if (editor_explorer_path_matches(editor->explorer.selected_path, path)) { editor->explorer.selected_path[0] = '\0'; }
+	editor_explorer_refresh(editor);
+	editor_set_status(editor, "deleted");
+}
+
+static void editor_explorer_perform_move(editor_t* editor, engine_t* engine) {
+	if (!editor || !engine) { return; }
+	char src[NB_EDITOR_FS_PATH_MAX];
+	char dst_dir[NB_EDITOR_FS_PATH_MAX];
+	char base[NB_EDITOR_FS_NAME_MAX];
+	char dst[NB_EDITOR_FS_PATH_MAX];
+	snprintf(src, sizeof(src), "%s", editor->dialog_path);
+	snprintf(dst_dir, sizeof(dst_dir), "%s", editor->dialog_dst);
+	editor->dialog_kind = NB_EDITOR_DIALOG_NONE;
+	editor_fs_basename(src, base, sizeof(base));
+	editor_fs_join_into(dst, sizeof(dst), dst_dir, base);
+	if (!editor_fs_is_inside(editor->explorer.root, src) || !editor_fs_is_inside(editor->explorer.root, dst) || strcmp(src, dst) == 0) {
+		editor_set_status(editor, "move failed: invalid path");
+		return;
+	}
+	if (!editor_fs_is_dir(dst_dir) || editor_fs_exists(dst)) {
+		editor_set_status(editor, "move failed: path exists or folder missing");
+		return;
+	}
+	const char* active = editor_scene_path(editor, engine);
+	if (editor_explorer_path_matches(active, src)) {
+		editor_explorer_save_if_dirty(editor, engine);
+	}
+	if (!editor_fs_move_path(src, dst)) {
+		editor_set_status(editor, "move failed");
+		return;
+	}
+	editor_fs_rewrite_refs(src, dst);
+	editor_explorer_after_path_change(editor, engine, src, dst);
+	if (editor_explorer_path_matches(editor->explorer.selected_path, src)) {
+		snprintf(editor->explorer.selected_path, sizeof(editor->explorer.selected_path), "%s", dst);
+	}
+	editor_explorer_refresh(editor);
+	editor_set_status(editor, "moved");
+}
+
+static void editor_explorer_perform_import(editor_t* editor) {
+	if (!editor) { return; }
+	char src[NB_EDITOR_FS_PATH_MAX];
+	char dir[NB_EDITOR_FS_PATH_MAX];
+	char base[NB_EDITOR_FS_NAME_MAX];
+	char dst[NB_EDITOR_FS_PATH_MAX];
+	snprintf(src, sizeof(src), "%s", editor->dialog_path);
+	snprintf(dir, sizeof(dir), "%s", editor->dialog_dst);
+	editor->dialog_kind = NB_EDITOR_DIALOG_NONE;
+	if (!editor_fs_exists(src) || !editor_fs_is_dir(dir)) {
+		editor_set_status(editor, "import failed: invalid source or folder");
+		return;
+	}
+	editor_fs_basename(src, base, sizeof(base));
+	editor_fs_join_into(dst, sizeof(dst), dir, base);
+	if (!editor_fs_is_inside(editor->explorer.root, dst) || editor_fs_exists(dst)) {
+		editor_set_status(editor, "import failed: path exists or outside project");
+		return;
+	}
+	if (!editor_fs_copy_file(src, dst)) {
+		editor_set_status(editor, "import failed");
+		return;
+	}
+	editor_explorer_refresh(editor);
+	editor_set_status(editor, "imported");
+}
+
+static void editor_explorer_perform_new_folder(editor_t* editor) {
+	if (!editor) { return; }
+	char path[NB_EDITOR_FS_PATH_MAX];
+	snprintf(path, sizeof(path), "%s", editor->dialog_path);
+	editor->dialog_kind = NB_EDITOR_DIALOG_NONE;
+	if (!editor_fs_is_inside(editor->explorer.root, path) || editor_fs_exists(path)) {
+		editor_set_status(editor, "new folder failed: path exists or outside project");
+		return;
+	}
+	if (!editor_fs_make_dir(path)) {
+		editor_set_status(editor, "new folder failed");
+		return;
+	}
+	editor_explorer_enter(editor, path);
+	editor_set_status(editor, "folder created");
+}
+
+static int editor_explorer_type_index(const char* path) {
+	if (editor_fs_is_dir(path)) { return 1; }
+	const char* ext = editor_fs_ext(path);
+	if (strcmp(ext, "tscn") == 0) { return 2; }
+	if (strcmp(ext, "tres") == 0) { return 3; }
+	if (strcmp(ext, "obj") == 0) { return 4; }
+	if (strcmp(ext, "ppm") == 0 || strcmp(ext, "clut") == 0) { return 5; }
+	if (strcmp(ext, "wav") == 0) { return 6; }
+	if (strcmp(ext, "wren") == 0) { return 7; }
+	return 8;
+}
+
+static const char* editor_explorer_type_name(int index) {
+	if (index == 1) { return "Folders"; }
+	if (index == 2) { return "Scenes"; }
+	if (index == 3) { return "Resources"; }
+	if (index == 4) { return "Meshes"; }
+	if (index == 5) { return "Textures"; }
+	if (index == 6) { return "Audio"; }
+	if (index == 7) { return "Scripts"; }
+	if (index == 8) { return "Other"; }
+	return "All";
+}
+
+static float editor_explorer_text_width(struct nk_context* ctx, const char* text, int len) {
+	if (!ctx || !ctx->style.font || !text || len <= 0) { return 0.0f; }
+	const struct nk_user_font* font = ctx->style.font;
+	return font->width(font->userdata, font->height, text, len);
+}
+
+static void editor_explorer_draw_text(struct nk_context* ctx, struct nk_rect rect, const char* text, int align, struct nk_color color) {
+	if (!ctx || !text || !*text) { return; }
+	int len = (int)strlen(text);
+	float width = editor_explorer_text_width(ctx, text, len);
+	float x = rect.x;
+	if (align == 1) { x += (rect.w - width) * 0.5f; }
+	else if (align == 2) { x += rect.w - width; }
+	if (x < rect.x) { x = rect.x; }
+	nk_draw_text(nk_window_get_canvas(ctx), nk_rect(x, rect.y, rect.w - (x - rect.x), rect.h),
+		text, len, ctx->style.font, nk_rgba(0, 0, 0, 0), color);
+}
+
+static void editor_explorer_draw_clipped_text(struct nk_context* ctx, struct nk_rect rect, const char* text, int align, struct nk_color color) {
+	if (!ctx || !text) { return; }
+	int len = (int)strlen(text);
+	float dots = editor_explorer_text_width(ctx, "...", 3);
+	if (editor_explorer_text_width(ctx, text, len) <= rect.w) {
+		editor_explorer_draw_text(ctx, rect, text, align, color);
+		return;
+	}
+	char buf[512];
+	int cut = len;
+	while (cut > 0 && editor_explorer_text_width(ctx, text, cut) + dots > rect.w) { cut--; }
+	snprintf(buf, sizeof(buf), "%.*s...", cut, text);
+	editor_explorer_draw_text(ctx, rect, buf, align, color);
+}
+
+static void editor_explorer_draw_name(struct nk_context* ctx, struct nk_rect rect, const char* name, struct nk_color color) {
+	if (!ctx || !name) { return; }
+	float line_h = ctx->style.font ? ctx->style.font->height : 14.0f;
+	int len = (int)strlen(name);
+	if (editor_explorer_text_width(ctx, name, len) <= rect.w) {
+		editor_explorer_draw_text(ctx, nk_rect(rect.x, rect.y + (rect.h - line_h) * 0.5f, rect.w, line_h), name, 1, color);
+		return;
+	}
+	int split = len / 2;
+	for (int i = len / 2 - 2; i <= len / 2 + 2; i++) {
+		if (i > 0 && i < len && (name[i] == '.' || name[i] == ' ' || name[i] == '_')) {
+			split = i + (name[i] == '.' ? 0 : 1);
+			break;
+		}
+	}
+	while (split > 0 && editor_explorer_text_width(ctx, name, split) > rect.w) { split--; }
+	if (split <= 0 || split >= len) {
+		editor_explorer_draw_clipped_text(ctx, nk_rect(rect.x, rect.y + (rect.h - line_h) * 0.5f, rect.w, line_h), name, 1, color);
+		return;
+	}
+	char first[512];
+	snprintf(first, sizeof(first), "%.*s", split, name);
+	editor_explorer_draw_clipped_text(ctx, nk_rect(rect.x, rect.y, rect.w, line_h), first, 1, color);
+	editor_explorer_draw_clipped_text(ctx, nk_rect(rect.x, rect.y + line_h + 1.0f, rect.w, line_h), name + split, 1, color);
+}
+
+static void editor_explorer_draw_icon(struct nk_context* ctx, struct nk_rect r, int type, float line) {
+	if (!ctx || r.w <= 0 || r.h <= 0) { return; }
+	struct nk_command_buffer* out = nk_window_get_canvas(ctx);
+	struct nk_color colors[9] = {
+		nk_rgb(170, 170, 180),
+		nk_rgb(230, 180, 70),
+		nk_rgb(155, 115, 220),
+		nk_rgb(90, 200, 190),
+		nk_rgb(100, 160, 230),
+		nk_rgb(120, 200, 120),
+		nk_rgb(230, 140, 90),
+		nk_rgb(230, 110, 130),
+		nk_rgb(170, 170, 180)
+	};
+	struct nk_color c = colors[type >= 0 && type < 9 ? type : 8];
+	struct nk_color dark = nk_rgb(30, 30, 30);
+	float x = r.x;
+	float y = r.y;
+	float w = r.w;
+	float h = r.h;
+	if (line < 1.0f) { line = 1.0f; }
+	if (type == 1) {
+		nk_fill_rect(out, nk_rect(x, y + h * 0.30f, w, h * 0.64f), h * 0.06f, c);
+		nk_fill_rect(out, nk_rect(x, y + h * 0.14f, w * 0.48f, h * 0.22f), h * 0.06f, c);
+		nk_fill_rect(out, nk_rect(x + w * 0.08f, y + h * 0.40f, w * 0.84f, h * 0.06f), 0, dark);
+	}
+	else if (type == 2) {
+		nk_fill_rect(out, nk_rect(x, y + h * 0.30f, w, h * 0.64f), h * 0.05f, c);
+		nk_fill_rect(out, nk_rect(x, y + h * 0.14f, w, h * 0.22f), h * 0.05f, c);
+		for (int i = 0; i < 4; i++) {
+			nk_fill_rect(out, nk_rect(x + w * (0.08f + i * 0.24f), y + h * 0.18f, w * 0.10f, h * 0.12f), 0, dark);
+		}
+	}
+	else if (type == 3) {
+		nk_fill_triangle(out, x + w * 0.5f, y, x + w, y + h * 0.5f, x + w * 0.5f, y + h, c);
+		nk_fill_triangle(out, x + w * 0.5f, y, x, y + h * 0.5f, x + w * 0.5f, y + h, c);
+		nk_fill_triangle(out, x + w * 0.5f, y + h * 0.28f, x + w * 0.76f, y + h * 0.5f, x + w * 0.5f, y + h * 0.72f, dark);
+	}
+	else if (type == 4) {
+		nk_stroke_rect(out, nk_rect(x + w * 0.16f, y + h * 0.22f, w * 0.68f, h * 0.62f), 0, line, c);
+		nk_stroke_rect(out, nk_rect(x + w * 0.34f, y + h * 0.06f, w * 0.68f, h * 0.62f), 0, line, c);
+		nk_stroke_line(out, x + w * 0.16f, y + h * 0.22f, x + w * 0.34f, y + h * 0.06f, line, c);
+		nk_stroke_line(out, x + w * 0.84f, y + h * 0.22f, x + w, y + h * 0.06f, line, c);
+		nk_stroke_line(out, x + w, y + h * 0.06f, x + w, y + h * 0.68f, line, c);
+		nk_stroke_line(out, x + w * 0.84f, y + h * 0.84f, x + w, y + h * 0.68f, line, c);
+	}
+	else if (type == 5) {
+		nk_stroke_rect(out, nk_rect(x + w * 0.06f, y + h * 0.12f, w * 0.88f, h * 0.76f), 0, line, c);
+		nk_fill_triangle(out, x + w * 0.14f, y + h * 0.76f, x + w * 0.52f, y + h * 0.36f, x + w * 0.86f, y + h * 0.76f, c);
+		nk_fill_circle(out, nk_rect(x + w * 0.62f, y + h * 0.22f, w * 0.16f, h * 0.16f), c);
+	}
+	else if (type == 6) {
+		nk_fill_rect(out, nk_rect(x + w * 0.08f, y + h * 0.36f, w * 0.30f, h * 0.28f), 0, c);
+		nk_fill_polygon(out, (const float[]){
+			x + w * 0.36f, y + h * 0.36f,
+			x + w * 0.36f, y + h * 0.64f,
+			x + w * 0.62f, y + h * 0.82f,
+			x + w * 0.62f, y + h * 0.18f
+		}, 4, c);
+		nk_stroke_line(out, x + w * 0.70f, y + h * 0.32f, x + w * 0.70f, y + h * 0.68f, line, c);
+		nk_stroke_line(out, x + w * 0.86f, y + h * 0.20f, x + w * 0.86f, y + h * 0.80f, line, c);
+	}
+	else if (type == 7) {
+		nk_stroke_rect(out, nk_rect(x + w * 0.14f, y + h * 0.08f, w * 0.72f, h * 0.84f), 0, line, c);
+		nk_stroke_line(out, x + w * 0.32f, y + h * 0.30f, x + w * 0.68f, y + h * 0.30f, line, c);
+		nk_stroke_line(out, x + w * 0.32f, y + h * 0.46f, x + w * 0.68f, y + h * 0.46f, line, c);
+		nk_stroke_line(out, x + w * 0.32f, y + h * 0.62f, x + w * 0.54f, y + h * 0.62f, line, c);
+	}
+	else {
+		nk_stroke_rect(out, nk_rect(x + w * 0.18f, y + h * 0.10f, w * 0.64f, h * 0.80f), 0, line, c);
+		nk_stroke_line(out, x + w * 0.30f, y + h * 0.36f, x + w * 0.70f, y + h * 0.36f, line, c);
+		nk_stroke_line(out, x + w * 0.30f, y + h * 0.52f, x + w * 0.70f, y + h * 0.52f, line, c);
+		nk_stroke_line(out, x + w * 0.30f, y + h * 0.68f, x + w * 0.56f, y + h * 0.68f, line, c);
+	}
+}
+
+static int editor_explorer_matches(const editor_t* editor, const editor_fs_entry_t* entry) {
+	if (!editor || !entry) { return 0; }
+	if (editor->explorer.filter[0] && strstr(entry->name, editor->explorer.filter) == NULL) { return 0; }
+	if (editor->explorer.type_filter != 0 && editor_explorer_type_index(entry->path) != editor->explorer.type_filter) { return 0; }
+	return 1;
+}
+
+static void editor_explorer_draw_tree_dir(editor_t* editor, engine_t* engine, struct nk_context* ctx, const char* path, const char* name, int depth, int tree_w, int* row_count) {
+	if (!editor || !engine || !ctx || !path || depth > 8 || *row_count >= NB_EDITOR_EXPLORER_TREE_ROWS_MAX) { return; }
+	int is_dir = editor_fs_is_dir(path);
+	editor_fs_entry_t entries[128];
+	int count = is_dir ? editor_fs_list_dir(path, entries, 128, editor->explorer.show_hidden) : 0;
+	int dirs = 0;
+	for (int i = 0; i < count; i++) {
+		if (entries[i].kind == NB_EDITOR_FS_KIND_DIR) { dirs++; }
+	}
+	int has_dirs = is_dir && dirs > 0;
+	int expanded = has_dirs && editor_explorer_is_expanded(editor, path);
+	int indent = 8 + depth * 14;
+	nk_layout_row_begin(ctx, NK_STATIC, 22.0f, 2);
+	nk_layout_row_push(ctx, (float)indent);
+	struct nk_rect spacer;
+	nk_widget(&spacer, ctx);
+	nk_layout_row_push(ctx, (float)(tree_w - indent - 6));
+	struct nk_rect row;
+	nk_widget(&row, ctx);
+	struct nk_command_buffer* out = nk_window_get_canvas(ctx);
+	int active = strcmp(editor->explorer.current_dir, path) == 0;
+	int hovered = nk_input_is_mouse_hovering_rect(&ctx->input, row);
+	if (active) {
+		nk_fill_rect(out, nk_shrink_rect(row, 1.0f), 4.0f, nk_rgb(43, 82, 120));
+	}
+	else if (hovered) {
+		nk_fill_rect(out, nk_shrink_rect(row, 1.0f), 4.0f, nk_rgb(48, 48, 48));
+	}
+	struct nk_rect toggle_rect = nk_rect(row.x + 3.0f, row.y + 4.0f, 13.0f, 14.0f);
+	if (has_dirs) {
+		float tx = row.x + 5.0f;
+		float ty = row.y + 7.0f;
+		if (expanded) {
+			nk_fill_triangle(out, tx, ty, tx + 8.0f, ty, tx + 4.0f, ty + 7.0f, nk_rgb(190, 190, 190));
+		}
+		else {
+			nk_fill_triangle(out, tx, ty, tx + 7.0f, ty + 4.0f, tx, ty + 8.0f, nk_rgb(190, 190, 190));
+		}
+	}
+	editor_explorer_draw_icon(ctx, nk_rect(row.x + 18.0f, row.y + 3.0f, 14.0f, 14.0f), is_dir ? 1 : editor_explorer_type_index(path), 1.0f);
+	editor_explorer_draw_clipped_text(ctx, nk_rect(row.x + 36.0f, row.y + 1.0f, row.w - 40.0f, 20.0f), name ? name : path, 0,
+		active ? nk_rgb(240, 240, 240) : nk_rgb(200, 200, 200));
+	if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, row)) {
+		snprintf(editor->explorer.selected_path, sizeof(editor->explorer.selected_path), "%.*s", (int)sizeof(editor->explorer.selected_path) - 1, path);
+		editor->explorer.context_empty = 0;
+		if (has_dirs && nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, toggle_rect)) {
+			editor_explorer_toggle_expanded(editor, path);
+		}
+		else if (is_dir) {
+			editor_explorer_enter(editor, path);
+			if (has_dirs && !editor_explorer_is_expanded(editor, path)) { editor_explorer_toggle_expanded(editor, path); }
+		}
+		else {
+			double now = editor_now_seconds();
+			int double_clicked = nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_DOUBLE, row);
+			int repeated_click = strcmp(editor->explorer.last_click_path, path) == 0 && now - editor->explorer.last_click_time < 0.35;
+			if (double_clicked || repeated_click) {
+				editor_explorer_activate(editor, engine, path);
+				editor->explorer.last_click_path[0] = '\0';
+			}
+			else {
+				editor->explorer.last_click_time = now;
+				snprintf(editor->explorer.last_click_path, sizeof(editor->explorer.last_click_path), "%s", path);
+			}
+		}
+	}
+	if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_RIGHT, row)) {
+		snprintf(editor->explorer.context_path, sizeof(editor->explorer.context_path), "%s", path);
+		snprintf(editor->explorer.selected_path, sizeof(editor->explorer.selected_path), "%s", path);
+		editor->explorer.context_rect[0] = row.x;
+		editor->explorer.context_rect[1] = row.y;
+		editor->explorer.context_rect[2] = row.w;
+		editor->explorer.context_rect[3] = row.h;
+		editor->explorer.context_empty = 0;
+	}
+	if (hovered) { nk_tooltip(ctx, path); }
+	if (*row_count < NB_EDITOR_EXPLORER_TREE_ROWS_MAX) {
+		snprintf(editor->explorer.tree_row_paths[*row_count], NB_EDITOR_FS_PATH_MAX, "%.*s", NB_EDITOR_FS_PATH_MAX - 1, path);
+		editor->explorer.tree_row_rects[*row_count][0] = row.x;
+		editor->explorer.tree_row_rects[*row_count][1] = row.y;
+		editor->explorer.tree_row_rects[*row_count][2] = row.w;
+		editor->explorer.tree_row_rects[*row_count][3] = row.h;
+		(*row_count)++;
+	}
+	nk_layout_row_end(ctx);
+	if (!expanded) { return; }
+	for (int i = 0; i < count; i++) {
+		if (entries[i].kind != NB_EDITOR_FS_KIND_DIR) { continue; }
+		editor_explorer_draw_tree_dir(editor, engine, ctx, entries[i].path, entries[i].name, depth + 1, tree_w, row_count);
+	}
+}
+
+static void editor_explorer_handle_drag(editor_t* editor, engine_t* engine, struct nk_context* ctx) {
+	if (!editor || !engine || !ctx) { return; }
+	if (!editor->explorer.drag_path[0]) { return; }
+	struct nk_vec2 mouse = ctx->input.mouse.pos;
+	int dx = (int)mouse.x - editor->explorer.drag_start_x;
+	int dy = (int)mouse.y - editor->explorer.drag_start_y;
+	if (!editor->explorer.drag_active && dx * dx + dy * dy > 36) { editor->explorer.drag_active = 1; }
+	if (!nk_input_is_mouse_released(&ctx->input, NK_BUTTON_LEFT)) { return; }
+	if (editor->explorer.drag_active) {
+		for (int i = 0; i < editor->explorer.tree_row_count; i++) {
+			float* r = editor->explorer.tree_row_rects[i];
+			struct nk_rect rect = nk_rect(r[0], r[1], r[2], r[3]);
+			if (!nk_input_is_mouse_hovering_rect(&ctx->input, rect)) { continue; }
+			const char* target = editor->explorer.tree_row_paths[i];
+			if (editor_fs_is_dir(target)) {
+				editor->dialog_kind = NB_EDITOR_DIALOG_MOVE;
+				editor->dialog_target = 0;
+				snprintf(editor->dialog_title, sizeof(editor->dialog_title), "Move File");
+				snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", editor->explorer.drag_path);
+				snprintf(editor->dialog_dst, sizeof(editor->dialog_dst), "%s", target);
+				snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Move to folder:");
+			}
+			break;
+		}
+	}
+	editor->explorer.drag_path[0] = '\0';
+	editor->explorer.drag_active = 0;
+}
+
+static void editor_explorer_dialog_rename(editor_t* editor, const char* path) {
+	if (!editor || !path || !*path) { return; }
+	char base[NB_EDITOR_FS_NAME_MAX];
+	editor_fs_basename(path, base, sizeof(base));
+	snprintf(editor->explorer.rename_path, sizeof(editor->explorer.rename_path), "%s", path);
+	snprintf(editor->explorer.rename_buffer, sizeof(editor->explorer.rename_buffer), "%s", base);
+	editor->explorer.rename_open = 1;
+}
+
+static void editor_explorer_dialog_delete(editor_t* editor, const char* path) {
+	if (!editor || !path || !*path) { return; }
+	editor->dialog_kind = NB_EDITOR_DIALOG_DELETE;
+	editor->dialog_target = 0;
+	snprintf(editor->dialog_title, sizeof(editor->dialog_title), "Delete");
+	snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", path);
+	snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Delete this item?");
+}
+
+static void editor_explorer_dialog_new_folder(editor_t* editor, const char* dir) {
+	if (!editor || !dir || !*dir) { return; }
+	char child[NB_EDITOR_FS_PATH_MAX];
+	editor_fs_join_into(child, sizeof(child), dir, "new_folder");
+	editor->dialog_kind = NB_EDITOR_DIALOG_NEW_FOLDER;
+	editor->dialog_target = 0;
+	snprintf(editor->dialog_title, sizeof(editor->dialog_title), "New Folder");
+	snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", child);
+	snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Folder path:");
+}
+
+static void editor_explorer_dialog_new_scene(editor_t* editor, const char* dir) {
+	if (!editor || !dir || !*dir) { return; }
+	char child[NB_EDITOR_FS_PATH_MAX];
+	editor_fs_join_into(child, sizeof(child), dir, "new_scene.tscn");
+	editor->dialog_kind = NB_EDITOR_DIALOG_NEW_SCENE;
+	editor->dialog_target = 0;
+	snprintf(editor->dialog_title, sizeof(editor->dialog_title), "New Scene");
+	snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", child);
+	snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Create and open a new scene");
+}
+
+static void editor_explorer_dialog_import(editor_t* editor, const char* dir) {
+	if (!editor || !dir || !*dir) { return; }
+	editor->dialog_kind = NB_EDITOR_DIALOG_IMPORT;
+	editor->dialog_target = 0;
+	snprintf(editor->dialog_title, sizeof(editor->dialog_title), "Import File");
+	editor->dialog_path[0] = '\0';
+	snprintf(editor->dialog_dst, sizeof(editor->dialog_dst), "%s", dir);
+	snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Source path:");
+}
+
+static void editor_run_scene(editor_t* editor, engine_t* engine);
+
+static void editor_explorer_draw_item_context_menu(editor_t* editor, engine_t* engine) {
+	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
+	if (!editor->explorer.context_path[0]) { return; }
+	char path[NB_EDITOR_FS_PATH_MAX];
+	snprintf(path, sizeof(path), "%s", editor->explorer.context_path);
+	float* r = editor->explorer.context_rect;
+	struct nk_rect trigger = nk_rect(r[0], r[1], r[2], r[3]);
+	if (nk_contextual_begin(ctx, NK_WINDOW_BORDER | NK_WINDOW_TITLE, nk_vec2(190, 180), trigger)) {
+		int action_taken = 0;
+		nk_layout_row_dynamic(ctx, 22, 1);
+		if (nk_contextual_item_label(ctx, "Open", NK_TEXT_LEFT)) {
+			editor_explorer_activate(editor, engine, path);
+			action_taken = 1;
+		}
+		if (strcmp(editor_fs_ext(path), "tscn") == 0 && nk_contextual_item_label(ctx, "Run Scene", NK_TEXT_LEFT)) {
+			editor_run_scene(editor, engine);
+			action_taken = 1;
+		}
+		if (nk_contextual_item_label(ctx, "Rename", NK_TEXT_LEFT)) {
+			editor_explorer_dialog_rename(editor, path);
+			action_taken = 1;
+		}
+		if (nk_contextual_item_label(ctx, "Duplicate", NK_TEXT_LEFT)) {
+			editor_explorer_duplicate(editor, engine, path);
+			action_taken = 1;
+		}
+		if (nk_contextual_item_label(ctx, "Delete", NK_TEXT_LEFT)) {
+			editor_explorer_dialog_delete(editor, path);
+			action_taken = 1;
+		}
+		if (nk_contextual_item_label(ctx, "Copy Path", NK_TEXT_LEFT)) {
+			editor_explorer_copy_path(path);
+			editor_set_status(editor, "path copied");
+			action_taken = 1;
+		}
+		if (action_taken) { editor->explorer.context_path[0] = '\0'; }
+		nk_contextual_end(ctx);
+	}
+	else {
+		editor->explorer.context_path[0] = '\0';
+	}
+}
+
+static void editor_explorer_draw_empty_context_menu(editor_t* editor) {
+	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
+	if (!editor->explorer.context_empty) { return; }
+	float* r = editor->explorer.context_rect;
+	struct nk_rect trigger = nk_rect(r[0], r[1], 2.0f, 2.0f);
+	if (nk_contextual_begin(ctx, NK_WINDOW_BORDER | NK_WINDOW_TITLE, nk_vec2(190, 150), trigger)) {
+		int action_taken = 0;
+		nk_layout_row_dynamic(ctx, 22, 1);
+		if (nk_contextual_item_label(ctx, "New Folder", NK_TEXT_LEFT)) {
+			editor_explorer_dialog_new_folder(editor, editor->explorer.current_dir);
+			action_taken = 1;
+		}
+		if (nk_contextual_item_label(ctx, "New Scene", NK_TEXT_LEFT)) {
+			editor_explorer_dialog_new_scene(editor, editor->explorer.current_dir);
+			action_taken = 1;
+		}
+		if (nk_contextual_item_label(ctx, "Import...", NK_TEXT_LEFT)) {
+			editor_explorer_dialog_import(editor, editor->explorer.current_dir);
+			action_taken = 1;
+		}
+		if (nk_contextual_item_label(ctx, "Refresh", NK_TEXT_LEFT)) {
+			editor_explorer_refresh(editor);
+			action_taken = 1;
+		}
+		if (nk_contextual_item_label(ctx, "Show Hidden Files", NK_TEXT_LEFT)) {
+			editor->explorer.show_hidden = !editor->explorer.show_hidden;
+			editor_explorer_refresh(editor);
+			action_taken = 1;
+		}
+		if (action_taken) { editor->explorer.context_empty = 0; }
+		nk_contextual_end(ctx);
+	}
+	else {
+		editor->explorer.context_empty = 0;
+	}
+}
+
+static void editor_run_scene(editor_t* editor, engine_t* engine);
+static void editor_open_project_from_dialog(editor_t* editor, engine_t* engine);
+static void editor_create_project_from_dialog(editor_t* editor, engine_t* engine);
+
+static void editor_explorer_item_click(editor_t* editor, engine_t* engine, struct nk_context* ctx, struct nk_rect rect, const editor_fs_entry_t* entry) {
+	if (!editor || !engine || !ctx || !entry) { return; }
+	snprintf(editor->explorer.selected_path, sizeof(editor->explorer.selected_path), "%.*s", (int)sizeof(editor->explorer.selected_path) - 1, entry->path);
+	snprintf(editor->explorer.drag_path, sizeof(editor->explorer.drag_path), "%s", entry->path);
+	editor->explorer.drag_start_x = (int)ctx->input.mouse.pos.x;
+	editor->explorer.drag_start_y = (int)ctx->input.mouse.pos.y;
+	double now = editor_now_seconds();
+	int double_clicked = nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_DOUBLE, rect);
+	int repeated_click = strcmp(editor->explorer.last_click_path, entry->path) == 0 && now - editor->explorer.last_click_time < 0.35;
+	if (double_clicked || repeated_click) {
+		editor_explorer_activate(editor, engine, entry->path);
+		editor->explorer.last_click_path[0] = '\0';
+		editor->explorer.drag_path[0] = '\0';
+	}
+	else {
+		editor->explorer.last_click_time = now;
+		snprintf(editor->explorer.last_click_path, sizeof(editor->explorer.last_click_path), "%s", entry->path);
+	}
+}
+
+static void editor_explorer_item_context(editor_t* editor, struct nk_context* ctx, struct nk_rect row, const editor_fs_entry_t* entry) {
+	if (!editor || !ctx || !entry) { return; }
+	if (!nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_RIGHT, row)) { return; }
+	snprintf(editor->explorer.context_path, sizeof(editor->explorer.context_path), "%s", entry->path);
+	editor->explorer.context_rect[0] = row.x;
+	editor->explorer.context_rect[1] = row.y;
+	editor->explorer.context_rect[2] = row.w;
+	editor->explorer.context_rect[3] = row.h;
+	snprintf(editor->explorer.selected_path, sizeof(editor->explorer.selected_path), "%s", entry->path);
+}
+
+struct editor_breadcrumb_t {
+	char label[64];
+	char path[NB_EDITOR_FS_PATH_MAX];
+};
+
+static void editor_draw_explorer_toolbar(struct nk_context* ctx, editor_t* editor, int w) {
+	if (!ctx || !editor) { return; }
+	struct editor_breadcrumb_t crumbs[8];
+	int count = 0;
+	char path[NB_EDITOR_FS_PATH_MAX];
+	snprintf(path, sizeof(path), "%s", editor->explorer.current_dir);
+	if (path[0] == '/') {
+		snprintf(crumbs[0].label, sizeof(crumbs[0].label), "/");
+		snprintf(crumbs[0].path, sizeof(crumbs[0].path), "/");
+		count = 1;
+	}
+	char rest[NB_EDITOR_FS_PATH_MAX];
+	snprintf(rest, sizeof(rest), "%s", path[0] == '/' ? path + 1 : path);
+	char prefix[NB_EDITOR_FS_PATH_MAX];
+	prefix[0] = '\0';
+	char* save = NULL;
+	for (char* part = strtok_r(rest, "/", &save); part && count < 8; part = strtok_r(NULL, "/", &save)) {
+		if (prefix[0] && prefix[strlen(prefix) - 1] != '/') { strncat(prefix, "/", sizeof(prefix) - strlen(prefix) - 1); }
+		strncat(prefix, part, sizeof(prefix) - strlen(prefix) - 1);
+		if (count > 0) {
+			snprintf(crumbs[count].label, sizeof(crumbs[count].label), "> %s", part);
+		}
+		else {
+			snprintf(crumbs[count].label, sizeof(crumbs[count].label), "%s", part);
+		}
+		snprintf(crumbs[count].path, sizeof(crumbs[count].path), "%s", prefix);
+		count++;
+	}
+	if (count == 0) {
+		snprintf(crumbs[0].label, sizeof(crumbs[0].label), "%.*s", (int)sizeof(crumbs[0].label) - 1, path);
+		snprintf(crumbs[0].path, sizeof(crumbs[0].path), "%s", path);
+		count = 1;
+	}
+	if (count > 5) {
+		struct editor_breadcrumb_t kept[5];
+		snprintf(kept[0].label, sizeof(kept[0].label), "%s", crumbs[0].label);
+		snprintf(kept[0].path, sizeof(kept[0].path), "%s", crumbs[0].path);
+		snprintf(kept[1].label, sizeof(kept[1].label), "> ...");
+		snprintf(kept[1].path, sizeof(kept[1].path), "%s", crumbs[count - 4].path);
+		for (int i = 0; i < 3; i++) {
+			snprintf(kept[2 + i].label, sizeof(kept[2 + i].label), "%s", crumbs[count - 3 + i].label);
+			snprintf(kept[2 + i].path, sizeof(kept[2 + i].path), "%s", crumbs[count - 3 + i].path);
+		}
+		for (int i = 0; i < 5; i++) {
+			snprintf(crumbs[i].label, sizeof(crumbs[i].label), "%s", kept[i].label);
+			snprintf(crumbs[i].path, sizeof(crumbs[i].path), "%s", kept[i].path);
+		}
+		count = 5;
+	}
+	float search_w = 180.0f;
+	if (w < 560) { search_w = 140.0f; }
+	if (w < 460) { search_w = 100.0f; }
+	float bc_avail = (float)w - 78.0f - search_w - 60.0f - 12.0f;
+	if (bc_avail < 40.0f) { bc_avail = 40.0f; }
+	float crumb_w[8];
+	float crumb_total = 0.0f;
+	for (int i = 0; i < count; i++) {
+		float width = editor_explorer_text_width(ctx, crumbs[i].label, (int)strlen(crumbs[i].label)) + 12.0f;
+		if (width < 26.0f) { width = 26.0f; }
+		if (width > 100.0f) { width = 100.0f; }
+		crumb_w[i] = width;
+		crumb_total += width;
+	}
+	if (crumb_total > bc_avail && crumb_total > 0.0f) {
+		float scale = bc_avail / crumb_total;
+		for (int i = 0; i < count; i++) { crumb_w[i] *= scale; }
+	}
+	nk_layout_row_template_begin(ctx, 26.0f);
+	nk_layout_row_template_push_static(ctx, 26.0f);
+	nk_layout_row_template_push_static(ctx, 26.0f);
+	nk_layout_row_template_push_static(ctx, 26.0f);
+	for (int i = 0; i < count; i++) { nk_layout_row_template_push_static(ctx, crumb_w[i]); }
+	nk_layout_row_template_push_variable(ctx, 20.0f);
+	nk_layout_row_template_push_static(ctx, search_w);
+	nk_layout_row_template_push_static(ctx, 60.0f);
+	nk_layout_row_template_end(ctx);
+
+	struct nk_rect bounds = nk_widget_bounds(ctx);
+	if (nk_button_label(ctx, "<") && editor->explorer.history_index > 0) { editor_explorer_navigate(editor, -1); }
+	if (nk_input_is_mouse_hovering_rect(&ctx->input, bounds)) { nk_tooltip(ctx, "Back"); }
+	bounds = nk_widget_bounds(ctx);
+	if (nk_button_label(ctx, ">") && editor->explorer.history_index + 1 < editor->explorer.history_count) { editor_explorer_navigate(editor, 1); }
+	if (nk_input_is_mouse_hovering_rect(&ctx->input, bounds)) { nk_tooltip(ctx, "Forward"); }
+	bounds = nk_widget_bounds(ctx);
+	if (nk_button_label(ctx, "^")) {
+		char parent[NB_EDITOR_FS_PATH_MAX];
+		editor_fs_dirname(editor->explorer.current_dir, parent, sizeof(parent));
+		editor_explorer_enter(editor, parent);
+	}
+	if (nk_input_is_mouse_hovering_rect(&ctx->input, bounds)) { nk_tooltip(ctx, "Up"); }
+
+	nk_style_push_style_item(ctx, &ctx->style.button.normal, nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+	nk_style_push_style_item(ctx, &ctx->style.button.hover, nk_style_item_color(nk_rgb(45, 45, 45)));
+	nk_style_push_style_item(ctx, &ctx->style.button.active, nk_style_item_color(nk_rgb(55, 55, 55)));
+	nk_style_push_float(ctx, &ctx->style.button.border, 0.0f);
+	nk_style_push_color(ctx, &ctx->style.button.text_normal, nk_rgb(180, 195, 210));
+	nk_style_push_color(ctx, &ctx->style.button.text_hover, nk_rgb(220, 230, 240));
+	nk_style_push_color(ctx, &ctx->style.button.text_active, nk_rgb(220, 230, 240));
+	for (int i = 0; i < count; i++) {
+		if (nk_button_label(ctx, crumbs[i].label)) { editor_explorer_enter(editor, crumbs[i].path); }
+	}
+	nk_style_pop_color(ctx);
+	nk_style_pop_color(ctx);
+	nk_style_pop_color(ctx);
+	nk_style_pop_float(ctx);
+	nk_style_pop_style_item(ctx);
+	nk_style_pop_style_item(ctx);
+	nk_style_pop_style_item(ctx);
+
+	nk_label(ctx, "", NK_TEXT_LEFT);
+	struct nk_rect search_rect = nk_widget_bounds(ctx);
+	nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD, editor->explorer.filter, (int)sizeof(editor->explorer.filter), nk_filter_default);
+	if (!editor->explorer.filter[0]) {
+		editor_explorer_draw_text(ctx, nk_rect(search_rect.x + 6.0f, search_rect.y, search_rect.w - 12.0f, search_rect.h), "Search", 0, nk_rgb(110, 110, 110));
+	}
+	if (nk_button_label(ctx, editor->explorer.view_grid ? "List" : "Grid")) {
+		editor->explorer.view_grid = !editor->explorer.view_grid;
+	}
+}
+
+static void editor_draw_explorer(editor_t* editor, engine_t* engine, int win_w, int win_h) {
+	(void)win_w;
+	if (!editor || !engine || !editor->nk_ctx) { return; }
+	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
+	int h = editor->explorer.height;
+	if (h < 240) { h = 240; }
+	if (h > win_h / 2) { h = win_h / 2; }
+	int y = win_h - 10 - h;
+	int x = editor->viewport_x;
+	int w = editor->viewport_w;
+	editor->explorer.height = h;
+	if (w < 240) { return; }
+	nk_flags flags = NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR;
+	if (editor->dialog_kind != NB_EDITOR_DIALOG_NONE) { flags |= NK_WINDOW_ROM; }
+
+	if (nk_begin(ctx, "Explorer", nk_rect((float)x, (float)y, (float)w, (float)h), flags)) {
+		struct nk_rect content_region = nk_window_get_content_region(ctx);
+		nk_fill_rect(nk_window_get_canvas(ctx), nk_rect(content_region.x, content_region.y, content_region.w, 26.0f), 0, nk_rgb(36, 36, 36));
+		editor_draw_explorer_toolbar(ctx, editor, w);
+
+		struct nk_rect clip = nk_window_get_content_region(ctx);
+		int remaining = (int)(clip.y + clip.h - ctx->current->layout->at_y);
+		if (remaining < 80) { remaining = 80; }
+		int tree_w = editor->explorer.tree_width;
+		if (tree_w <= 0) { tree_w = (int)((float)w * 0.22f); }
+		if (w < 420) { tree_w = 0; }
+		else {
+			if (tree_w < 140) { tree_w = 140; }
+			if (tree_w > w - 260) { tree_w = w - 260; }
+			editor->explorer.tree_width = tree_w;
+		}
+		int files_w = tree_w > 0 ? w - tree_w - 8 : w;
+		if (files_w < 120) { files_w = 120; }
+		int body_cols = tree_w > 0 ? 2 : 1;
+		float body_ratio[2] = { (float)tree_w, (float)files_w };
+		nk_layout_row(ctx, NK_STATIC, (float)remaining, body_cols, body_ratio);
+
+		if (tree_w > 0) {
+			editor->explorer.tree_row_count = 0;
+			if (nk_group_scrolled_offset_begin(ctx, &editor->explorer.tree_scroll_x, &editor->explorer.tree_scroll_y, "FSTree", NK_WINDOW_BORDER)) {
+				struct nk_rect content = nk_window_get_content_region(ctx);
+				editor->explorer.tree_rect[0] = content.x;
+				editor->explorer.tree_rect[1] = content.y;
+				editor->explorer.tree_rect[2] = content.w;
+				editor->explorer.tree_rect[3] = content.h;
+				char root_name[NB_EDITOR_FS_NAME_MAX];
+				editor_fs_basename(editor->explorer.root, root_name, sizeof(root_name));
+				if (!root_name[0]) { snprintf(root_name, sizeof(root_name), "%.*s", (int)sizeof(root_name) - 1, editor->explorer.root); }
+				editor_explorer_draw_tree_dir(editor, engine, ctx, editor->explorer.root, root_name, 0, (int)content.w, &editor->explorer.tree_row_count);
+				nk_group_scrolled_end(ctx);
+			}
+		}
+		else {
+			editor->explorer.tree_rect[0] = 0;
+			editor->explorer.tree_rect[1] = 0;
+			editor->explorer.tree_rect[2] = 0;
+			editor->explorer.tree_rect[3] = 0;
+		}
+
+		if (nk_group_scrolled_offset_begin(ctx, &editor->explorer.files_scroll_x, &editor->explorer.files_scroll_y, "FSFiles", NK_WINDOW_BORDER)) {
+			struct nk_rect content = nk_window_get_content_region(ctx);
+			editor->explorer.files_rect[0] = content.x;
+			editor->explorer.files_rect[1] = content.y;
+			editor->explorer.files_rect[2] = content.w;
+			editor->explorer.files_rect[3] = content.h;
+			int pane_w = (int)content.w;
+			if (pane_w < 120) { pane_w = files_w; }
+			nk_fill_rect(nk_window_get_canvas(ctx), content, 0, nk_rgb(24, 24, 24));
+			nk_style_push_float(ctx, &ctx->style.button.border, 0.0f);
+			nk_style_push_float(ctx, &ctx->style.selectable.rounding, 4.0f);
+			if (editor->explorer.rename_open) {
+				nk_layout_row_static(ctx, 22.0f, (float)(pane_w - 120), 1);
+				int flags = nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE, editor->explorer.rename_buffer, (int)sizeof(editor->explorer.rename_buffer), nk_filter_default);
+				if (flags & NK_EDIT_COMMITTED) { editor_explorer_commit_rename(editor, engine); }
+				nk_layout_row_static(ctx, 22.0f, 55.0f, 2);
+				if (nk_button_label(ctx, "OK")) { editor_explorer_commit_rename(editor, engine); }
+				if (nk_button_label(ctx, "No")) { editor->explorer.rename_open = 0; }
+			}
+			int visible_count = 0;
+			for (int i = 0; i < editor->explorer.file_count; i++) {
+				if (editor_explorer_matches(editor, &editor->explorer.files[i])) { visible_count++; }
+			}
+			char selected_name[NB_EDITOR_FS_NAME_MAX];
+			if (editor->explorer.selected_path[0]) {
+				editor_fs_basename(editor->explorer.selected_path, selected_name, sizeof(selected_name));
+			}
+			else {
+				snprintf(selected_name, sizeof(selected_name), "none");
+			}
+			snprintf(editor->explorer.status, sizeof(editor->explorer.status), "%d items | %d shown | %s", editor->explorer.file_count, visible_count, selected_name);
+			if (visible_count == 0) {
+				nk_layout_row_dynamic(ctx, 24.0f, 1);
+				nk_label(ctx, "No files to show", NK_TEXT_LEFT);
+			}
+			else if (editor->explorer.view_grid) {
+				int tile_w = editor->explorer.tile_width;
+				if (tile_w < 84) { tile_w = 84; }
+				if (tile_w > 96) { tile_w = 96; }
+				int cols = pane_w / tile_w;
+				if (cols < 1) { cols = 1; }
+				float cell_w = (float)pane_w / (float)cols;
+				struct nk_command_buffer* out = nk_window_get_canvas(ctx);
+				int col = 0;
+				for (int i = 0; i < editor->explorer.file_count; i++) {
+					editor_fs_entry_t* entry = &editor->explorer.files[i];
+					if (!editor_explorer_matches(editor, entry)) { continue; }
+					if (col == 0) { nk_layout_row_begin(ctx, NK_STATIC, 84.0f, cols); }
+					nk_layout_row_push(ctx, cell_w);
+					struct nk_rect cell;
+					nk_widget(&cell, ctx);
+					struct nk_rect box = nk_shrink_rect(cell, 2.0f);
+					int selected = strcmp(entry->path, editor->explorer.selected_path) == 0;
+					int hovered = nk_input_is_mouse_hovering_rect(&ctx->input, cell);
+					if (selected) {
+						nk_fill_rect(out, box, 4.0f, nk_rgb(43, 82, 120));
+						nk_stroke_rect(out, box, 4.0f, 1.0f, nk_rgb(90, 145, 190));
+					}
+					else {
+						nk_fill_rect(out, box, 4.0f, hovered ? nk_rgb(44, 44, 44) : nk_rgb(32, 32, 32));
+						if (hovered) { nk_stroke_rect(out, box, 4.0f, 1.0f, nk_rgb(75, 75, 75)); }
+					}
+					float icon_size = 48.0f;
+					editor_explorer_draw_icon(ctx, nk_rect(box.x + (box.w - icon_size) * 0.5f, box.y + 4.0f, icon_size, icon_size),
+						editor_explorer_type_index(entry->path), 2.0f);
+					editor_explorer_draw_name(ctx, nk_rect(box.x + 2.0f, box.y + 56.0f, box.w - 4.0f, 26.0f), entry->name,
+						selected ? nk_rgb(240, 240, 240) : nk_rgb(205, 205, 205));
+					if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, cell)) {
+						editor_explorer_item_click(editor, engine, ctx, cell, entry);
+						editor->explorer.context_empty = 0;
+					}
+					if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_RIGHT, cell)) {
+						editor_explorer_item_context(editor, ctx, cell, entry);
+						editor->explorer.context_empty = 0;
+					}
+					if (hovered) { nk_tooltip(ctx, entry->path); }
+					col++;
+					if (col >= cols) {
+						nk_layout_row_end(ctx);
+						col = 0;
+					}
+				}
+				if (col > 0) {
+					for (; col < cols; col++) {
+						nk_layout_row_push(ctx, cell_w);
+						struct nk_rect empty;
+						nk_widget(&empty, ctx);
+					}
+					nk_layout_row_end(ctx);
+				}
+			}
+			else {
+				int type_w = 72;
+				int size_w = 64;
+				int name_w = pane_w - type_w - size_w - 8;
+				if (name_w < 80) {
+					name_w = pane_w - 8;
+					type_w = 0;
+					size_w = 0;
+				}
+				nk_layout_row_begin(ctx, NK_STATIC, 20.0f, 3);
+				nk_layout_row_push(ctx, (float)name_w);
+				nk_label(ctx, "Name", NK_TEXT_LEFT);
+				nk_layout_row_push(ctx, (float)type_w);
+				nk_label(ctx, "Type", NK_TEXT_LEFT);
+				nk_layout_row_push(ctx, (float)size_w);
+				nk_label(ctx, "Size", NK_TEXT_RIGHT);
+				nk_layout_row_end(ctx);
+				for (int i = 0; i < editor->explorer.file_count; i++) {
+					editor_fs_entry_t* entry = &editor->explorer.files[i];
+					if (!editor_explorer_matches(editor, entry)) { continue; }
+					nk_layout_row_begin(ctx, NK_STATIC, 22.0f, 3);
+					nk_layout_row_push(ctx, (float)name_w);
+					struct nk_rect row;
+					nk_widget(&row, ctx);
+					struct nk_command_buffer* out = nk_window_get_canvas(ctx);
+					int selected = strcmp(entry->path, editor->explorer.selected_path) == 0;
+					int hovered = nk_input_is_mouse_hovering_rect(&ctx->input, row);
+					if (selected) {
+						nk_fill_rect(out, nk_shrink_rect(row, 1.0f), 4.0f, nk_rgb(43, 82, 120));
+					}
+					else if (hovered) {
+						nk_fill_rect(out, nk_shrink_rect(row, 1.0f), 4.0f, nk_rgb(44, 44, 44));
+					}
+					editor_explorer_draw_icon(ctx, nk_rect(row.x + 2.0f, row.y + 3.0f, 16.0f, 16.0f),
+						editor_explorer_type_index(entry->path), 1.0f);
+					editor_explorer_draw_clipped_text(ctx, nk_rect(row.x + 22.0f, row.y + 2.0f, row.w - 26.0f, 18.0f), entry->name, 0,
+						selected ? nk_rgb(240, 240, 240) : nk_rgb(205, 205, 205));
+					if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, row)) {
+						editor_explorer_item_click(editor, engine, ctx, row, entry);
+						editor->explorer.context_empty = 0;
+					}
+					if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_RIGHT, row)) {
+						editor_explorer_item_context(editor, ctx, row, entry);
+						editor->explorer.context_empty = 0;
+					}
+					if (hovered) { nk_tooltip(ctx, entry->path); }
+					nk_layout_row_push(ctx, (float)type_w);
+					struct nk_rect type_rect;
+					nk_widget(&type_rect, ctx);
+					editor_explorer_draw_clipped_text(ctx, type_rect, editor_explorer_type_name(editor_explorer_type_index(entry->path)), 0, nk_rgb(130, 130, 130));
+					nk_layout_row_push(ctx, (float)size_w);
+					struct nk_rect size_rect;
+					nk_widget(&size_rect, ctx);
+					char size_text[32];
+					if (entry->kind == NB_EDITOR_FS_KIND_DIR) {
+						snprintf(size_text, sizeof(size_text), "<DIR>");
+					}
+					else {
+						snprintf(size_text, sizeof(size_text), "%ld", entry->size);
+					}
+					editor_explorer_draw_clipped_text(ctx, size_rect, size_text, 2, nk_rgb(130, 130, 130));
+					nk_layout_row_end(ctx);
+				}
+			}
+			if (!editor->explorer.context_path[0] && !editor->explorer.rename_open &&
+				nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_RIGHT, content)) {
+				editor->explorer.context_empty = 1;
+				editor->explorer.context_rect[0] = ctx->input.mouse.pos.x;
+				editor->explorer.context_rect[1] = ctx->input.mouse.pos.y;
+				editor->explorer.context_rect[2] = 2.0f;
+				editor->explorer.context_rect[3] = 2.0f;
+			}
+			nk_style_pop_float(ctx);
+			nk_style_pop_float(ctx);
+			nk_group_scrolled_end(ctx);
+		}
+		nk_layout_row_dynamic(ctx, 20.0f, 1);
+		nk_label(ctx, editor->explorer.status, NK_TEXT_LEFT);
+		editor_explorer_draw_item_context_menu(editor, engine);
+		editor_explorer_draw_empty_context_menu(editor);
+	}
+	nk_end(ctx);
+	editor_explorer_handle_drag(editor, engine, ctx);
+}
+
 static void editor_run_scene(editor_t* editor, engine_t* engine) {
 	if (!editor || !engine) { return; }
 	if (!editor_save_scene(editor, engine)) { return; }
@@ -244,11 +1581,18 @@ static void editor_run_scene(editor_t* editor, engine_t* engine) {
 		engine_log(engine, "run failed: doc='%s' cfg='%s' ed='%s'", engine->scene_doc.path, engine->config.scene_path, editor->scene_path);
 		return;
 	}
+	char exe[PATH_MAX];
+	ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	if (len <= 0) {
+		editor_set_status(editor, "game launch failed: no executable path");
+		return;
+	}
+	exe[len] = '\0';
 	char scene_arg[512];
 	snprintf(scene_arg, sizeof(scene_arg), "--scene=%s", scene);
-	char* argv[] = { (char*)"./build/nodebench", (char*)"--mode=game", scene_arg, NULL };
+	char* argv[] = { exe, (char*)"--mode=game", scene_arg, NULL };
 	pid_t pid = -1;
-	int rc = posix_spawn(&pid, "./build/nodebench", NULL, NULL, argv, environ);
+	int rc = posix_spawn(&pid, exe, NULL, NULL, argv, environ);
 	if (rc == 0) {
 		editor->play_pid = (int)pid;
 		editor_set_status(editor, "game launched");
@@ -262,6 +1606,7 @@ int editor_init(editor_t* editor, engine_t* engine) {
 	if (!editor || !engine) { return 0; }
 
 	memset(editor, 0, sizeof(*editor));
+	editor->engine = engine;
 	editor_hierarchy_clear_state(editor);
 	editor->enabled = engine->config.editor_enabled ? 1 : 0;
 	editor->selected_entity = NB_ENTITY_INVALID;
@@ -293,6 +1638,19 @@ int editor_init(editor_t* editor, engine_t* engine) {
 	editor->inspector_editing = 0;
 	editor->has_pre_edit = 0;
 	memset(&editor->pre_edit, 0, sizeof(editor->pre_edit));
+	editor_tab_init(&editor->tabs[0], editor->scene_path, editor);
+	editor->tab_count = 1;
+	editor->active_tab = 0;
+	editor->explorer.height = 320;
+	editor->explorer.tree_width = editor->viewport_w * 22 / 100;
+	if (editor->explorer.tree_width < 140) { editor->explorer.tree_width = 140; }
+	editor->explorer.tile_width = 92;
+	editor->explorer.view_grid = 1;
+	snprintf(editor->explorer.root, sizeof(editor->explorer.root), "%s", engine->config.project_root[0] ? engine->config.project_root : ".");
+	snprintf(editor->explorer.current_dir, sizeof(editor->explorer.current_dir), "%s", editor->explorer.root);
+	editor_explorer_history_reset(editor);
+	editor_explorer_refresh(editor);
+	if (!editor_explorer_is_expanded(editor, editor->explorer.root)) { editor_explorer_toggle_expanded(editor, editor->explorer.root); }
 	editor_set_status(editor, "editor ready");
 
 	SDL_Window* window = (SDL_Window*)platform_window(&engine->platform);
@@ -310,6 +1668,11 @@ int editor_init(editor_t* editor, engine_t* engine) {
 
 	struct nk_font_atlas* atlas = NULL;
 	nk_sdl_font_stash_begin(&atlas);
+	struct nk_font_config base_cfg = nk_font_config(14.0f);
+	base_cfg.oversample_h = 2;
+	base_cfg.oversample_v = 2;
+	struct nk_font* base_font = nk_font_atlas_add_default(atlas, 14.0f, &base_cfg);
+	if (base_font) { atlas->default_font = base_font; }
 	nk_sdl_font_stash_end();
 
 	{
@@ -440,12 +1803,62 @@ void editor_shutdown(editor_t* editor, engine_t* engine) {
 int editor_handle_event(editor_t* editor, const void* sdl_event) {
 	if (!editor || !editor->ready || !editor->enabled || !sdl_event) { return 0; }
 	SDL_Event* e = (SDL_Event*)sdl_event;
+	int resize_y = editor->win_h - 10 - editor->explorer.height;
+	int split_x = (int)(editor->explorer.tree_rect[0] + editor->explorer.tree_rect[2]);
+	int split_y = (int)editor->explorer.tree_rect[1];
+	int split_h = (int)editor->explorer.tree_rect[3];
+	if (e->type == SDL_MOUSEBUTTONDOWN && e->button.button == SDL_BUTTON_LEFT) {
+		if (e->button.x >= editor->viewport_x && e->button.x <= editor->viewport_x + editor->viewport_w && abs(e->button.y - resize_y) <= 5) {
+			editor->explorer.resizing = 1;
+			return 1;
+		}
+		if (split_h > 0 && abs(e->button.x - split_x) <= 4 && e->button.y >= split_y && e->button.y <= split_y + split_h) {
+			editor->explorer.tree_resizing = 1;
+			return 1;
+		}
+	}
+	if (e->type == SDL_MOUSEMOTION && editor->explorer.resizing) {
+		int h = editor->win_h - 10 - e->motion.y;
+		if (h < 240) { h = 240; }
+		if (h > editor->win_h / 2) { h = editor->win_h / 2; }
+		editor->explorer.height = h;
+		return 1;
+	}
+	if (e->type == SDL_MOUSEMOTION && editor->explorer.tree_resizing) {
+		int tw = e->motion.x - editor->viewport_x;
+		if (tw < 140) { tw = 140; }
+		if (tw > editor->viewport_w - 260) { tw = editor->viewport_w - 260; }
+		if (tw > 0) { editor->explorer.tree_width = tw; }
+		return 1;
+	}
+	if (e->type == SDL_MOUSEBUTTONUP && editor->explorer.resizing) {
+		editor->explorer.resizing = 0;
+		return 1;
+	}
+	if (e->type == SDL_MOUSEBUTTONUP && editor->explorer.tree_resizing) {
+		editor->explorer.tree_resizing = 0;
+		return 1;
+	}
 	if (e->type == SDL_KEYDOWN) {
 		SDL_Keymod mods = SDL_GetModState();
 		int ctrl = (mods & KMOD_CTRL) != 0;
 		if (ctrl && e->key.keysym.sym == SDLK_s) { editor->request_save = 1; return 1; }
 		if (ctrl && e->key.keysym.sym == SDLK_z) { editor->request_undo = 1; return 1; }
 		if (ctrl && e->key.keysym.sym == SDLK_y) { editor->request_redo = 1; return 1; }
+		if (editor->explorer.selected_path[0] && editor->dialog_kind == NB_EDITOR_DIALOG_NONE && !editor->inspector_editing) {
+			if (ctrl && e->key.keysym.sym == SDLK_d) {
+				editor_explorer_duplicate(editor, editor->engine, editor->explorer.selected_path);
+				return 1;
+			}
+			if (e->key.keysym.sym == SDLK_F2) {
+				editor_explorer_dialog_rename(editor, editor->explorer.selected_path);
+				return 1;
+			}
+			if (e->key.keysym.sym == SDLK_DELETE) {
+				editor_explorer_dialog_delete(editor, editor->explorer.selected_path);
+				return 1;
+			}
+		}
 	}
 	return nk_sdl_handle_event(e);
 }
@@ -1605,6 +3018,265 @@ static void editor_update_camera(editor_t* editor, engine_t* engine, float dt) {
 	}
 }
 
+static void editor_draw_scene_tabs(editor_t* editor, engine_t* engine, int win_w) {
+	if (!editor || !editor->nk_ctx) { return; }
+	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
+	int x = 360;
+	int w = win_w - 720;
+	if (w < 160) { w = 160; }
+	int show_add = editor->tab_count < NB_EDITOR_SCENE_TABS_MAX;
+	int columns = editor->tab_count * 2 + (show_add ? 1 : 0);
+	if (columns <= 0) { return; }
+	if (nk_begin(ctx, "SceneTabs", nk_rect((float)x, 10.0f, (float)w, 28.0f), NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
+		nk_layout_row_begin(ctx, NK_STATIC, 24.0f, columns);
+		for (int i = 0; i < editor->tab_count; i++) {
+			editor_scene_tab_t* tab = &editor->tabs[i];
+			nk_layout_row_push(ctx, 120.0f);
+			struct nk_style_button style = ctx->style.button;
+			if (i == editor->active_tab) {
+				style.normal = style.active;
+				style.hover = style.active;
+			}
+			char label[192];
+			snprintf(label, sizeof(label), "%s%s", tab->name, tab->dirty ? "*" : "");
+			if (nk_button_label_styled(ctx, &style, label)) {
+				editor_request_switch_tab(editor, engine, i);
+			}
+			nk_layout_row_push(ctx, 26.0f);
+			if (nk_button_label(ctx, "x")) {
+				editor_request_close_tab(editor, engine, i);
+			}
+		}
+		if (show_add) {
+			nk_layout_row_push(ctx, 26.0f);
+			if (nk_button_label(ctx, "+")) {
+				editor->dialog_kind = NB_EDITOR_DIALOG_NEW_SCENE;
+				editor->dialog_target = 0;
+				snprintf(editor->dialog_title, sizeof(editor->dialog_title), "New Scene");
+				snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", "examples/kula/scenes/new_scene.tscn");
+				snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Create and open a new scene");
+			}
+		}
+		nk_layout_row_end(ctx);
+	}
+	nk_end(ctx);
+}
+
+static void editor_create_scene_from_dialog(editor_t* editor, engine_t* engine) {
+	if (!editor || !engine) { return; }
+	const char* path = editor->dialog_path;
+	if (!editor_fs_is_inside(editor->explorer.root, path)) {
+		editor_set_status(editor, "new scene failed: path outside project");
+		return;
+	}
+	if (editor_fs_exists(path)) {
+		editor_set_status(editor, "new scene failed: path exists");
+		return;
+	}
+	const char* content = "[gd_scene load_steps=1 format=2]\n\n[node name=\"Root\" type=\"Node\"]\n";
+	if (!editor_fs_write_text(path, content, strlen(content))) {
+		editor_set_status(editor, "new scene failed: write error");
+		return;
+	}
+	editor->dialog_kind = NB_EDITOR_DIALOG_NONE;
+	editor_explorer_refresh(editor);
+	editor_request_open_scene(editor, engine, path);
+}
+
+static int editor_project_valid(const char* path) {
+	if (!path || !*path || !editor_fs_is_dir(path)) { return 0; }
+	char marker[NB_EDITOR_FS_PATH_MAX];
+	editor_fs_join_into(marker, sizeof(marker), path, "project.ini");
+	return access(marker, F_OK) == 0;
+}
+
+static void editor_open_project_now(editor_t* editor, engine_t* engine, const char* path) {
+	if (!editor || !engine || !path || !*path) { return; }
+	char abs[PATH_MAX];
+	if (!realpath(path, abs) || !editor_project_valid(abs)) {
+		editor_set_status(editor, "open project failed: project.ini not found");
+		return;
+	}
+	if (chdir(abs) != 0) {
+		editor_set_status(editor, "open project failed: chdir");
+		return;
+	}
+	render_config_init(&engine->config);
+	if (!config_load_file(&engine->config, "project.ini")) {
+		editor_set_status(editor, "open project failed: project.ini read error");
+		return;
+	}
+	engine->config.editor_enabled = 1;
+	snprintf(engine->config.mode, sizeof(engine->config.mode), "editor");
+	snprintf(engine->config.project_root, sizeof(engine->config.project_root), "%.*s", (int)sizeof(engine->config.project_root) - 1, abs);
+	editor->tab_count = 0;
+	editor->active_tab = -1;
+	snprintf(editor->scene_path, sizeof(editor->scene_path), "%s", engine->config.scene_path);
+	snprintf(editor->explorer.root, sizeof(editor->explorer.root), "%.*s", (int)sizeof(editor->explorer.root) - 1, abs);
+	snprintf(editor->explorer.current_dir, sizeof(editor->explorer.current_dir), "%s", editor->explorer.root);
+	editor_explorer_history_reset(editor);
+	editor->explorer.expanded_count = 0;
+	editor->explorer.selected_path[0] = '\0';
+	editor->explorer.context_path[0] = '\0';
+	editor->explorer.context_empty = 0;
+	editor->explorer.filter[0] = '\0';
+	editor->explorer.type_filter = 0;
+	if (engine->config.scene_path[0]) {
+		editor_open_scene_now(editor, engine, engine->config.scene_path);
+	}
+	editor_explorer_refresh(editor);
+	if (!editor_explorer_is_expanded(editor, editor->explorer.root)) { editor_explorer_toggle_expanded(editor, editor->explorer.root); }
+	editor_set_status(editor, "project opened");
+}
+
+static void editor_open_project_from_dialog(editor_t* editor, engine_t* engine) {
+	if (!editor || !engine) { return; }
+	editor_open_project_now(editor, engine, editor->dialog_path);
+	if (editor->dialog_kind == NB_EDITOR_DIALOG_OPEN_PROJECT) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; }
+}
+
+static void editor_create_project_from_dialog(editor_t* editor, engine_t* engine) {
+	if (!editor || !engine) { return; }
+	char path[NB_EDITOR_FS_PATH_MAX];
+	if (!editor_fs_normalize(editor->dialog_path, path, sizeof(path)) || !path[0]) {
+		editor_set_status(editor, "new project failed: invalid path");
+		return;
+	}
+	if (editor_fs_exists(path)) {
+		editor_set_status(editor, "new project failed: path exists");
+		return;
+	}
+	char scenes[NB_EDITOR_FS_PATH_MAX];
+	char assets[NB_EDITOR_FS_PATH_MAX];
+	char scripts[NB_EDITOR_FS_PATH_MAX];
+	char models[NB_EDITOR_FS_PATH_MAX];
+	char scene[NB_EDITOR_FS_PATH_MAX];
+	char marker[NB_EDITOR_FS_PATH_MAX];
+	editor_fs_join_into(scenes, sizeof(scenes), path, "scenes");
+	editor_fs_join_into(assets, sizeof(assets), path, "assets");
+	editor_fs_join_into(scripts, sizeof(scripts), path, "scripts");
+	editor_fs_join_into(models, sizeof(models), path, "models");
+	editor_fs_join_into(scene, sizeof(scene), scenes, "main.tscn");
+	editor_fs_join_into(marker, sizeof(marker), path, "project.ini");
+	if (!editor_fs_make_dir(scenes) || !editor_fs_make_dir(assets) || !editor_fs_make_dir(scripts) || !editor_fs_make_dir(models)) {
+		editor_set_status(editor, "new project failed: cannot create folders");
+		return;
+	}
+	char name[NB_EDITOR_FS_NAME_MAX];
+	editor_fs_basename(path, name, sizeof(name));
+	char content[4096];
+	snprintf(content, sizeof(content),
+		"virtual_resolution = %dx%d\nwindow_resolution = %dx%d\nvertex_snap_grid = %dx%d\n"
+		"affine_strength = %.3f\ncolor_depth = %d\ndithering = %d\nfog_enabled = %d\n"
+		"fog_range = %.3f,%.3f\nfog_color = %d,%d,%d\nsky_top = %d,%d,%d\nsky_bottom = %d,%d,%d\n"
+		"near_plane = %.4f\nfar_plane = %.3f\ncull_backfaces = %d\nreject_near_triangles = %d\n"
+		"subdivide_large_triangles = %d\nsubdivide_area_threshold = %.3f\n"
+		"blend_mode = none\nshade_mode = gouraud\nlight_direction = %.3f,%.3f,%.3f\nlight_color = %.3f,%.3f,%.3f\n"
+		"texture_vram_limit = %d\nwireframe_enabled = %d\nxray_enabled = %d\nhud_enabled = %d\n"
+		"hud_debug_enabled = %d\neditor_enabled = 1\nlog_level = info\n"
+		"project_name = %s\nmode = editor\nscene_path = scenes/main.tscn\n",
+		engine->config.width, engine->config.height, engine->config.window_width, engine->config.window_height,
+		engine->config.snap_grid_width, engine->config.snap_grid_height, engine->config.affine_strength,
+		engine->config.color_depth, engine->config.dither_enabled, engine->config.fog_enabled,
+		engine->config.fog_near, engine->config.fog_far,
+		engine->config.fog_color_rgb[0], engine->config.fog_color_rgb[1], engine->config.fog_color_rgb[2],
+		engine->config.sky_top_rgb[0], engine->config.sky_top_rgb[1], engine->config.sky_top_rgb[2],
+		engine->config.sky_bottom_rgb[0], engine->config.sky_bottom_rgb[1], engine->config.sky_bottom_rgb[2],
+		engine->config.near_plane, engine->config.far_plane, engine->config.cull_backfaces, engine->config.reject_near_triangles,
+		engine->config.subdivide_large_triangles, engine->config.subdivide_area_threshold,
+		engine->config.light_direction[0], engine->config.light_direction[1], engine->config.light_direction[2],
+		engine->config.light_color[0], engine->config.light_color[1], engine->config.light_color[2],
+		engine->config.texture_vram_limit, engine->config.wireframe_enabled, engine->config.xray_enabled,
+		engine->config.hud_enabled, engine->config.hud_debug_enabled, name);
+	const char* scene_data = "[gd_scene load_steps=1 format=2]\n\n[node name=\"Root\" type=\"Node\"]\n";
+	if (!editor_fs_write_text(marker, content, strlen(content)) || !editor_fs_write_text(scene, scene_data, strlen(scene_data))) {
+		editor_set_status(editor, "new project failed: write error");
+		return;
+	}
+	editor->dialog_kind = NB_EDITOR_DIALOG_NONE;
+	editor_open_project_now(editor, engine, path);
+}
+
+static void editor_draw_dialogs(editor_t* editor, engine_t* engine, int win_w, int win_h) {
+	if (!editor || !editor->nk_ctx || editor->dialog_kind == NB_EDITOR_DIALOG_NONE) { return; }
+	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
+	float w = 460.0f;
+	float h = 176.0f;
+	if (editor->dialog_kind == NB_EDITOR_DIALOG_MOVE || editor->dialog_kind == NB_EDITOR_DIALOG_IMPORT) { h = 210.0f; }
+	float x = (float)(win_w - (int)w) * 0.5f;
+	float y = (float)(win_h - (int)h) * 0.5f;
+	if (nk_begin(ctx, "EditorDialog", nk_rect(x, y, w, h), NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR)) {
+		nk_layout_row_dynamic(ctx, 24.0f, 1);
+		nk_label(ctx, editor->dialog_text, NK_TEXT_LEFT);
+		if (editor->dialog_kind == NB_EDITOR_DIALOG_NEW_SCENE) {
+			nk_layout_row_dynamic(ctx, 24.0f, 1);
+			nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE, editor->dialog_path, (int)sizeof(editor->dialog_path), nk_filter_default);
+			nk_layout_row_dynamic(ctx, 28.0f, 2);
+			if (nk_button_label(ctx, "Create")) { editor_create_scene_from_dialog(editor, engine); }
+			if (nk_button_label(ctx, "Cancel")) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; }
+		}
+		else if (editor->dialog_kind == NB_EDITOR_DIALOG_NEW_FOLDER) {
+			nk_layout_row_dynamic(ctx, 24.0f, 1);
+			nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE, editor->dialog_path, (int)sizeof(editor->dialog_path), nk_filter_default);
+			nk_layout_row_dynamic(ctx, 28.0f, 2);
+			if (nk_button_label(ctx, "Create")) { editor_explorer_perform_new_folder(editor); }
+			if (nk_button_label(ctx, "Cancel")) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; }
+		}
+		else if (editor->dialog_kind == NB_EDITOR_DIALOG_OPEN_PROJECT) {
+			nk_layout_row_dynamic(ctx, 24.0f, 1);
+			nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE, editor->dialog_path, (int)sizeof(editor->dialog_path), nk_filter_default);
+			nk_layout_row_dynamic(ctx, 28.0f, 2);
+			if (nk_button_label(ctx, "Open")) { editor_open_project_from_dialog(editor, engine); }
+			if (nk_button_label(ctx, "Cancel")) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; }
+		}
+		else if (editor->dialog_kind == NB_EDITOR_DIALOG_NEW_PROJECT) {
+			nk_layout_row_dynamic(ctx, 24.0f, 1);
+			nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE, editor->dialog_path, (int)sizeof(editor->dialog_path), nk_filter_default);
+			nk_layout_row_dynamic(ctx, 28.0f, 2);
+			if (nk_button_label(ctx, "Create")) { editor_create_project_from_dialog(editor, engine); }
+			if (nk_button_label(ctx, "Cancel")) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; }
+		}
+		else if (editor->dialog_kind == NB_EDITOR_DIALOG_DELETE) {
+			nk_layout_row_dynamic(ctx, 24.0f, 1);
+			nk_labelf(ctx, NK_TEXT_LEFT, "%s", editor->dialog_path);
+			nk_layout_row_dynamic(ctx, 28.0f, 2);
+			if (nk_button_label(ctx, "Delete")) { editor_explorer_perform_delete(editor, engine); }
+			if (nk_button_label(ctx, "Cancel")) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; }
+		}
+		else if (editor->dialog_kind == NB_EDITOR_DIALOG_MOVE) {
+			nk_layout_row_dynamic(ctx, 22.0f, 1);
+			nk_labelf(ctx, NK_TEXT_LEFT, "from: %s", editor->dialog_path);
+			nk_layout_row_dynamic(ctx, 22.0f, 1);
+			nk_label(ctx, "folder:", NK_TEXT_LEFT);
+			nk_layout_row_dynamic(ctx, 24.0f, 1);
+			nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE, editor->dialog_dst, (int)sizeof(editor->dialog_dst), nk_filter_default);
+			nk_layout_row_dynamic(ctx, 28.0f, 2);
+			if (nk_button_label(ctx, "Move")) { editor_explorer_perform_move(editor, engine); }
+			if (nk_button_label(ctx, "Cancel")) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; }
+		}
+		else if (editor->dialog_kind == NB_EDITOR_DIALOG_IMPORT) {
+			nk_layout_row_dynamic(ctx, 22.0f, 1);
+			nk_label(ctx, "source:", NK_TEXT_LEFT);
+			nk_layout_row_dynamic(ctx, 24.0f, 1);
+			nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE, editor->dialog_path, (int)sizeof(editor->dialog_path), nk_filter_default);
+			nk_layout_row_dynamic(ctx, 22.0f, 1);
+			nk_label(ctx, "folder:", NK_TEXT_LEFT);
+			nk_layout_row_dynamic(ctx, 24.0f, 1);
+			nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_GOTO_END_ON_ACTIVATE, editor->dialog_dst, (int)sizeof(editor->dialog_dst), nk_filter_default);
+			nk_layout_row_dynamic(ctx, 28.0f, 2);
+			if (nk_button_label(ctx, "Import")) { editor_explorer_perform_import(editor); }
+			if (nk_button_label(ctx, "Cancel")) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; }
+		}
+		else {
+			nk_layout_row_dynamic(ctx, 28.0f, 3);
+			if (nk_button_label(ctx, "Save")) { editor_dialog_apply_discard(editor, engine, 1); }
+			if (nk_button_label(ctx, "Discard")) { editor_dialog_apply_discard(editor, engine, 0); }
+			if (nk_button_label(ctx, "Cancel")) { editor->dialog_kind = NB_EDITOR_DIALOG_NONE; editor->dialog_target = 0; }
+		}
+	}
+	nk_end(ctx);
+}
+
 void editor_update(editor_t* editor, engine_t* engine) {
 	if (!editor_enabled(editor) || !engine) { return; }
 
@@ -1634,6 +3306,9 @@ void editor_update(editor_t* editor, engine_t* engine) {
 	if (editor->request_undo) { editor_undo(editor, engine); editor->request_undo = 0; }
 	if (editor->request_redo) { editor_redo(editor, engine); editor->request_redo = 0; }
 	editor_fix_selection(editor, engine);
+	if (editor->active_tab >= 0 && editor->active_tab < editor->tab_count) {
+		editor->tabs[editor->active_tab].dirty = engine->scene_doc.dirty ? 1 : 0;
+	}
 
 	editor->autosave_timer += 1.0 / 60.0;
 	if (editor->autosave_timer >= 5.0) {
@@ -1657,6 +3332,8 @@ void editor_update(editor_t* editor, engine_t* engine) {
 	platform_output_size(&engine->platform, &win_w, &win_h);
 	if (win_w <= 0) { win_w = 1280; }
 	if (win_h <= 0) { win_h = 720; }
+	editor->win_w = win_w;
+	editor->win_h = win_h;
 
 	editor_draw_scene_panel(editor, engine, win_w, win_h);
 	editor_draw_render_config(editor, engine, win_w, win_h);
@@ -1664,15 +3341,26 @@ void editor_update(editor_t* editor, engine_t* engine) {
 	editor_draw_inspector(editor, engine, win_w, win_h);
 	editor_draw_reparent(editor, engine, win_w, win_h);
 
+	int tab_y = 10;
+	int tab_h = 28;
+	int toolbar_y = tab_y + tab_h + 6;
 	editor->toolbar_h = 34;
 	editor->viewport_x = 360;
-	editor->viewport_y = 10 + editor->toolbar_h + 8;
+	editor->viewport_y = toolbar_y + editor->toolbar_h + 8;
 	editor->viewport_w = win_w - 360 - 360 - 20;
-	editor->viewport_h = win_h - editor->viewport_y - 10;
+	int explorer_max_h = win_h - editor->viewport_y - 10 - 160;
+	if (explorer_max_h < 240) { explorer_max_h = 240; }
+	if (editor->explorer.height < 240) { editor->explorer.height = 240; }
+	if (editor->explorer.height > explorer_max_h) { editor->explorer.height = explorer_max_h; }
+	if (editor->explorer.height > win_h / 2) { editor->explorer.height = win_h / 2; }
+	int explorer_y = win_h - 10 - editor->explorer.height;
+	editor->viewport_h = explorer_y - editor->viewport_y - 8;
 	if (editor->viewport_w < 160) { editor->viewport_w = 160; }
 	if (editor->viewport_h < 120) { editor->viewport_h = 120; }
 
-	if (nk_begin(ctx, "Tools", nk_rect((float)editor->viewport_x, 10, (float)editor->viewport_w, (float)editor->toolbar_h), NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
+	editor_draw_scene_tabs(editor, engine, win_w);
+
+	if (nk_begin(ctx, "Tools", nk_rect((float)editor->viewport_x, (float)toolbar_y, (float)editor->viewport_w, (float)editor->toolbar_h), NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
 		int tools[4] = { NB_EDITOR_TOOL_SELECT, NB_EDITOR_TOOL_MOVE, NB_EDITOR_TOOL_ROTATE, NB_EDITOR_TOOL_SCALE };
 		nk_layout_row_static(ctx, 28, 32, 4);
 		for (int i = 0; i < 4; i++) {
@@ -1693,6 +3381,8 @@ void editor_update(editor_t* editor, engine_t* engine) {
 		}
 	}
 	nk_end(ctx);
+	editor_draw_explorer(editor, engine, win_w, win_h);
+	editor_draw_dialogs(editor, engine, win_w, win_h);
 
 	editor_update_camera(editor, engine, 1.0f / 60.0f);
 	editor_apply_gizmo(editor, engine);

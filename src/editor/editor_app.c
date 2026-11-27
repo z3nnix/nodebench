@@ -10,7 +10,9 @@
 #include "render/draw_list.h"
 #include "render/framebuffer.h"
 #include "render/renderer.h"
+#include "resource/resource.h"
 #include "scene/scene_doc.h"
+#include "script/wren_vm.h"
 
 static const float pi = 3.14159265f;
 
@@ -158,6 +160,45 @@ static void editor_app_shutdown(engine_t* engine, void* context) {
 	if (engine) { engine->scene_graph = NULL; }
 	scene_shutdown(&app->scene);
 	free(app);
+}
+
+nb_result_t editor_app_open_scene(engine_t* engine, const char* path) {
+	if (!engine || !path || !*path || !engine->scene.context) {
+		return NB_RESULT_ERROR_INVALID_ARGUMENT;
+	}
+	editor_app_t* app = (editor_app_t*)engine->scene.context;
+
+	scene_shutdown(&app->scene);
+	scene_init(&app->scene);
+	scene_doc_clear(&engine->scene_doc);
+	if (engine->script_vm_ready) {
+		wren_vm_shutdown(&engine->script_vm);
+		engine->script_vm_ready = 0;
+	}
+	if (engine->resources_ready) {
+		resource_store_shutdown(&engine->resources);
+		engine->resources_ready = 0;
+	}
+	resource_store_init(&engine->resources, engine->config.texture_vram_limit);
+	engine->resources_ready = 1;
+	if (!wren_vm_init(&engine->script_vm, engine)) {
+		engine->script_vm_ready = 0;
+	}
+	else {
+		engine->script_vm_ready = 1;
+		wren_vm_bind_scene(&engine->script_vm, &app->scene);
+	}
+
+	snprintf(engine->scene_doc.path, sizeof(engine->scene_doc.path), "%s", path);
+	snprintf(engine->config.scene_path, sizeof(engine->config.scene_path), "%s", path);
+	engine->scene_graph = &app->scene;
+	nb_result_t result = scene_doc_load(&engine->scene_doc, path, engine, &app->scene);
+	if (result != NB_RESULT_OK) {
+		engine_log(engine, "editor scene open failed: %s: %s", path, nb_error_string(result));
+		return result;
+	}
+	engine_log(engine, "editor scene opened: %s entities=%d", engine->scene_doc.path, app->scene.entity_count);
+	return NB_RESULT_OK;
 }
 
 void editor_app_register(engine_t* engine) {

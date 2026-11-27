@@ -64,6 +64,7 @@ typedef struct {
 	int max_frames;
 	nb_log_level_t log_level;
 	char log_file[256];
+	char project_root[256];
 	char scene_path[256];
 	char project_name[NB_CONFIG_PROJECT_NAME_MAX];
 	char mode[NB_CONFIG_MODE_MAX];
@@ -72,6 +73,7 @@ typedef struct {
 } render_config_t;
 
 void render_config_init(render_config_t* config);
+int config_resolve_project_root(int argc, char** argv, char* out, size_t size);
 int config_load_file(render_config_t* config, const char* path);
 int config_apply_cli(render_config_t* config, int argc, char** argv);
 void config_print_usage(const char* program);
