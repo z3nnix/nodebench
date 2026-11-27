@@ -5,6 +5,7 @@
 #include <math.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +14,11 @@
 #include <unistd.h>
 
 #include "editor/editor.h"
+#include "audio/audio.h"
 #include "core/engine.h"
 #include "editor/editor_app.h"
+#include "render/color.h"
+#include "resource/loader.h"
 #include "scene/scene_doc.h"
 
 extern char** environ;
@@ -41,6 +45,448 @@ static double editor_now_seconds(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+
+static void editor_inspector_autosave(editor_t* editor, int force);
+
+static void editor_inspector_mark_dirty(editor_t* editor) {
+	editor->inspector_dirty = 1;
+	editor->inspector_dirty_time = editor_now_seconds();
+}
+
+static void editor_inspector_show_node(editor_t* editor) {
+	if (!editor) { return; }
+	editor_inspector_autosave(editor, 1);
+	editor->inspector_kind = NB_EDITOR_INSPECTOR_NODE;
+	editor->inspector_path[0] = '\0';
+	editor->inspector_dirty = 0;
+	editor->inspector_color_index = -1;
+	editor->inspector_scroll_x = 0;
+	editor->inspector_scroll_y = 0;
+}
+
+static void editor_inspector_set_resource(editor_t* editor, editor_inspector_kind_t kind, const char* path) {
+	editor_inspector_autosave(editor, 1);
+	editor->inspector_kind = kind;
+	snprintf(editor->inspector_path, sizeof(editor->inspector_path), "%.*s", (int)sizeof(editor->inspector_path) - 1, path);
+	editor->inspector_node_entity = editor->selected_entity;
+	editor->inspector_dirty = 0;
+	editor->inspector_color_index = -1;
+	editor->inspector_wav_end = 0.0;
+	editor->inspector_scroll_x = 0;
+	editor->inspector_scroll_y = 0;
+}
+
+static int editor_inspector_append(char* buf, size_t cap, int* off, const char* fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+	int n = vsnprintf(buf + *off, cap - (size_t)*off, fmt, args);
+	va_end(args);
+	if (n < 0 || *off + n >= (int)cap) { return 0; }
+	*off += n;
+	return 1;
+}
+
+static void editor_inspector_trim(char* text) {
+	char* start = text;
+	while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') { start++; }
+	char* end = start + strlen(start);
+	while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) { end--; }
+	*end = '\0';
+	if (start != text) { memmove(text, start, (size_t)(end - start) + 1); }
+}
+
+static void editor_inspector_strip_comment(char* line) {
+	char* comment = strchr(line, ';');
+	if (comment) { *comment = '\0'; }
+	editor_inspector_trim(line);
+}
+
+static void editor_inspector_kv(const char* line, const char* key, char* out, size_t size) {
+	out[0] = '\0';
+	const char* eq = strchr(line, '=');
+	if (!eq) { return; }
+	char found[64];
+	size_t len = (size_t)(eq - line);
+	if (len >= sizeof(found)) { return; }
+	memcpy(found, line, len);
+	found[len] = '\0';
+	editor_inspector_trim(found);
+	if (strcmp(found, key) != 0) { return; }
+	const char* value = eq + 1;
+	while (*value == ' ' || *value == '\t') { value++; }
+	len = strlen(value);
+	if (len >= size) { len = size - 1; }
+	memcpy(out, value, len);
+	out[len] = '\0';
+	editor_inspector_trim(out);
+	len = strlen(out);
+	if (len >= 2 && ((out[0] == '"' && out[len - 1] == '"') || (out[0] == '\'' && out[len - 1] == '\''))) {
+		memmove(out, out + 1, len - 2);
+		out[len - 2] = '\0';
+	}
+}
+
+static void editor_inspector_parse_reference(const char* value, char* out, size_t size) {
+	out[0] = '\0';
+	const char* call = strstr(value, "ExtResource");
+	if (!call) { return; }
+	const char* open = strchr(call, '(');
+	if (!open) { return; }
+	const char* quote = strchr(open, '"');
+	if (!quote) { return; }
+	quote++;
+	size_t i = 0;
+	while (*quote && *quote != '"' && i + 1 < size) { out[i++] = *quote++; }
+	out[i] = '\0';
+}
+
+static void editor_inspector_parse_color(const char* value, float* out, int count) {
+	const char* open = strchr(value, '(');
+	if (!open) { return; }
+	float colors[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	if (sscanf(open + 1, "%f , %f , %f , %f", &colors[0], &colors[1], &colors[2], &colors[3]) < 3) { return; }
+	for (int i = 0; i < count; i++) { out[i] = colors[i]; }
+}
+
+static int editor_inspector_blend_index(const char* name) {
+	static const char* const names[] = { "none", "alpha_50", "add", "subtract", "add_quarter" };
+	for (int i = 0; i < 5; i++) {
+		if (strcmp(name, names[i]) == 0) { return i; }
+	}
+	return NB_BLEND_NONE;
+}
+
+static int editor_inspector_shade_index(const char* name) {
+	static const char* const names[] = { "flat", "gouraud" };
+	for (int i = 0; i < 2; i++) {
+		if (strcmp(name, names[i]) == 0) { return i; }
+	}
+	return NB_SHADE_GOURAUD;
+}
+
+static const char* editor_inspector_blend_name(int index) {
+	static const char* const names[] = { "none", "alpha_50", "add", "subtract", "add_quarter" };
+	if (index < 0 || index > 4) { return names[0]; }
+	return names[index];
+}
+
+static const char* editor_inspector_shade_name(int index) {
+	static const char* const names[] = { "flat", "gouraud" };
+	if (index < 0 || index > 1) { return names[0]; }
+	return names[index];
+}
+
+static struct nk_color editor_inspector_hsv_color(float h, float s, float v) {
+	float sector = h / 60.0f;
+	float f = fmodf(sector, 2.0f);
+	float x = v * s * (1.0f - fabsf(f - 1.0f));
+	float c = v * s;
+	float m = v - c;
+	float r = m;
+	float g = m;
+	float b = m;
+	if (sector < 1.0f) { r += c; g += x; }
+	else if (sector < 2.0f) { r += x; g += c; }
+	else if (sector < 3.0f) { g += c; b += x; }
+	else if (sector < 4.0f) { g += x; b += c; }
+	else if (sector < 5.0f) { r += x; b += c; }
+	else { r += c; b += x; }
+	return nk_rgb((int)(r * 255.0f), (int)(g * 255.0f), (int)(b * 255.0f));
+}
+
+static void editor_inspector_rgb_to_hsv(int r, int g, int b, float* out_h, float* out_s, float* out_v) {
+	float rn = (float)r / 255.0f;
+	float gn = (float)g / 255.0f;
+	float bn = (float)b / 255.0f;
+	float max = rn > gn ? rn : gn;
+	if (bn > max) { max = bn; }
+	float min = rn < gn ? rn : gn;
+	if (bn < min) { min = bn; }
+	float delta = max - min;
+	*out_v = max;
+	if (delta < 0.0001f) {
+		*out_h = 0.0f;
+		*out_s = 0.0f;
+		return;
+	}
+	*out_s = max > 0.0f ? delta / max : 0.0f;
+	if (max == rn) { *out_h = 60.0f * fmodf((gn - bn) / delta, 6.0f); }
+	else if (max == gn) { *out_h = 60.0f * ((bn - rn) / delta + 2.0f); }
+	else { *out_h = 60.0f * ((rn - gn) / delta + 4.0f); }
+	if (*out_h < 0.0f) { *out_h += 360.0f; }
+}
+
+static void editor_inspector_update_hex(editor_t* editor, struct nk_color color) {
+	int a = (int)(editor->inspector_color_a * 255.0f);
+	if (editor->inspector_color_target == NB_EDITOR_COLOR_TARGET_TRES) {
+		snprintf(editor->inspector_color_hex, sizeof(editor->inspector_color_hex), "#%02X%02X%02X%02X", color.r, color.g, color.b, a);
+	}
+	else {
+		snprintf(editor->inspector_color_hex, sizeof(editor->inspector_color_hex), "#%02X%02X%02X", color.r, color.g, color.b);
+	}
+}
+
+static void editor_inspector_sync_picker(editor_t* editor, int r, int g, int b, int a) {
+	editor_inspector_rgb_to_hsv(r, g, b, &editor->inspector_color_h, &editor->inspector_color_s, &editor->inspector_color_v);
+	editor->inspector_color_a = (float)a / 255.0f;
+	editor_inspector_update_hex(editor, nk_rgb(r, g, b));
+}
+
+static void editor_inspector_apply_picker_color(editor_t* editor) {
+	if (editor->inspector_color_h < 0.0f) { editor->inspector_color_h += 360.0f; }
+	else if (editor->inspector_color_h >= 360.0f) { editor->inspector_color_h -= 360.0f; }
+	if (editor->inspector_color_s < 0.0f) { editor->inspector_color_s = 0.0f; }
+	else if (editor->inspector_color_s > 1.0f) { editor->inspector_color_s = 1.0f; }
+	if (editor->inspector_color_v < 0.0f) { editor->inspector_color_v = 0.0f; }
+	else if (editor->inspector_color_v > 1.0f) { editor->inspector_color_v = 1.0f; }
+	if (editor->inspector_color_a < 0.0f) { editor->inspector_color_a = 0.0f; }
+	else if (editor->inspector_color_a > 1.0f) { editor->inspector_color_a = 1.0f; }
+	struct nk_color color = editor_inspector_hsv_color(editor->inspector_color_h, editor->inspector_color_s, editor->inspector_color_v);
+	editor_inspector_update_hex(editor, color);
+	if (editor->inspector_color_target == NB_EDITOR_COLOR_TARGET_CLUT) {
+		editor_clut_state_t* state = &editor->inspector_clut;
+		int index = editor->inspector_color_index;
+		if (index < 0 || index >= state->count) { return; }
+		state->r[index] = color.r;
+		state->g[index] = color.g;
+		state->b[index] = color.b;
+	}
+	else {
+		editor_tres_state_t* state = &editor->inspector_tres;
+		state->tint[0] = (float)color.r / 255.0f;
+		state->tint[1] = (float)color.g / 255.0f;
+		state->tint[2] = (float)color.b / 255.0f;
+		state->tint[3] = editor->inspector_color_a;
+	}
+	editor_inspector_mark_dirty(editor);
+}
+
+static void editor_inspector_select_clut_color(editor_t* editor, int index) {
+	editor_clut_state_t* state = &editor->inspector_clut;
+	if (index < 0 || index >= state->count) { return; }
+	editor->inspector_color_index = index;
+	editor->inspector_color_target = NB_EDITOR_COLOR_TARGET_CLUT;
+	editor_inspector_sync_picker(editor, (int)state->r[index], (int)state->g[index], (int)state->b[index], 255);
+}
+
+static int editor_inspector_hex_digit(char c) {
+	if (c >= '0' && c <= '9') { return c - '0'; }
+	if (c >= 'a' && c <= 'f') { return c - 'a' + 10; }
+	if (c >= 'A' && c <= 'F') { return c - 'A' + 10; }
+	return -1;
+}
+
+static int editor_inspector_parse_hex(editor_t* editor, const char* text) {
+	if (!text) { return 0; }
+	const char* p = text;
+	if (*p == '#') { p++; }
+	int values[8];
+	int count = 0;
+	for (; count < 8; count++) {
+		int digit = editor_inspector_hex_digit(p[count]);
+		if (digit < 0) { break; }
+		values[count] = digit;
+	}
+	if (count != 6 && count != 8) { return 0; }
+	while (p[count] == ' ' || p[count] == '\t') { count++; }
+	if (p[count]) { return 0; }
+	int r = values[0] * 16 + values[1];
+	int g = values[2] * 16 + values[3];
+	int b = values[4] * 16 + values[5];
+	int a = count == 8 ? values[6] * 16 + values[7] : 255;
+	editor_inspector_sync_picker(editor, r, g, b, a);
+	editor_inspector_apply_picker_color(editor);
+	return 1;
+}
+
+static void editor_inspector_load_clut(editor_t* editor, const char* path) {
+	editor_clut_state_t* state = &editor->inspector_clut;
+	memset(state, 0, sizeof(*state));
+	palette_t palette;
+	memset(&palette, 0, sizeof(palette));
+	if (!clut_load(path, &palette)) {
+		editor_set_status(editor, "failed to open clut");
+		return;
+	}
+	state->count = palette.count > NB_EDITOR_INSPECTOR_CLUT_MAX ? NB_EDITOR_INSPECTOR_CLUT_MAX : palette.count;
+	for (int i = 0; i < state->count; i++) {
+		int r = 0;
+		int g = 0;
+		int b = 0;
+		rgb555_unpack(palette.colors[i], &r, &g, &b);
+		state->r[i] = (unsigned char)r;
+		state->g[i] = (unsigned char)g;
+		state->b[i] = (unsigned char)b;
+	}
+	clut_free(&palette);
+	editor_inspector_set_resource(editor, NB_EDITOR_INSPECTOR_CLUT, path);
+}
+
+static void editor_inspector_load_tres(editor_t* editor, engine_t* engine, const char* path) {
+	editor_tres_state_t* state = &editor->inspector_tres;
+	memset(state, 0, sizeof(*state));
+	state->blend_mode = engine ? (int)engine->config.blend_mode : NB_BLEND_NONE;
+	state->shade_mode = engine ? (int)engine->config.shade_mode : NB_SHADE_FLAT;
+	state->fog_enabled = engine ? engine->config.fog_enabled : 0;
+	state->tint[0] = 1.0f;
+	state->tint[1] = 1.0f;
+	state->tint[2] = 1.0f;
+	state->tint[3] = 1.0f;
+	state->transparent_index = (int)NB_TEXTURE_TRANSPARENT;
+	char* data = NULL;
+	size_t size = 0;
+	if (!editor_fs_read_text(path, &data, &size) || !data) {
+		free(data);
+		editor_set_status(editor, "failed to open tres");
+		return;
+	}
+	int in_resource = 0;
+	char* save = NULL;
+	for (char* line = strtok_r(data, "\r\n", &save); line; line = strtok_r(NULL, "\r\n", &save)) {
+		editor_inspector_strip_comment(line);
+		if (!line[0]) { continue; }
+		if (strncmp(line, "[gd_resource", 12) == 0) {
+			snprintf(state->header, sizeof(state->header), "%.*s", (int)sizeof(state->header) - 1, line);
+			continue;
+		}
+		if (strncmp(line, "[ext_resource", 13) == 0) {
+			if (state->ext_count < NB_EDITOR_INSPECTOR_TRES_EXT_MAX) {
+				snprintf(state->ext[state->ext_count], NB_EDITOR_INSPECTOR_TRES_LINE_MAX, "%.*s", NB_EDITOR_INSPECTOR_TRES_LINE_MAX - 1, line);
+				state->ext_count++;
+			}
+			continue;
+		}
+		if (strncmp(line, "[resource", 9) == 0) {
+			in_resource = 1;
+			continue;
+		}
+		if (!in_resource || line[0] == '[') { continue; }
+		char value[256];
+		editor_inspector_kv(line, "resource_name", value, sizeof(value));
+		if (value[0]) { snprintf(state->name, sizeof(state->name), "%.*s", (int)sizeof(state->name) - 1, value); }
+		editor_inspector_kv(line, "texture", value, sizeof(value));
+		if (value[0]) { editor_inspector_parse_reference(value, state->texture, sizeof(state->texture)); }
+		editor_inspector_kv(line, "palette", value, sizeof(value));
+		if (value[0]) { editor_inspector_parse_reference(value, state->palette, sizeof(state->palette)); }
+		editor_inspector_kv(line, "blend_mode", value, sizeof(value));
+		if (value[0]) { state->blend_mode = editor_inspector_blend_index(value); }
+		editor_inspector_kv(line, "shade_mode", value, sizeof(value));
+		if (value[0]) { state->shade_mode = editor_inspector_shade_index(value); }
+		editor_inspector_kv(line, "fog_enabled", value, sizeof(value));
+		if (value[0]) { state->fog_enabled = strcmp(value, "true") == 0 || strcmp(value, "1") == 0; }
+		editor_inspector_kv(line, "vertex_color_tint", value, sizeof(value));
+		if (value[0]) { editor_inspector_parse_color(value, state->tint, 4); }
+		editor_inspector_kv(line, "transparent_index", value, sizeof(value));
+		if (value[0]) { state->transparent_index = atoi(value); }
+	}
+	free(data);
+	editor->inspector_color_target = NB_EDITOR_COLOR_TARGET_TRES;
+	editor_inspector_sync_picker(editor, (int)(state->tint[0] * 255.0f), (int)(state->tint[1] * 255.0f), (int)(state->tint[2] * 255.0f), (int)(state->tint[3] * 255.0f));
+	editor_inspector_set_resource(editor, NB_EDITOR_INSPECTOR_TRES, path);
+}
+
+static void editor_inspector_load_wav(editor_t* editor, engine_t* engine, const char* path) {
+	editor_wav_state_t* state = &editor->inspector_wav;
+	memset(state, 0, sizeof(*state));
+	if (editor->inspector_wav_voice >= 0) {
+		audio_stop_voice(engine && engine->audio.ready ? &engine->audio : NULL, editor->inspector_wav_voice);
+		editor->inspector_wav_voice = -1;
+	}
+	audio_stream_t stream;
+	memset(&stream, 0, sizeof(stream));
+	if (!wav_load(path, &stream)) {
+		editor_set_status(editor, "failed to open wav");
+		return;
+	}
+	state->sample_rate = (int)stream.sample_rate;
+	state->channels = (int)stream.channels;
+	state->frame_count = stream.frame_count;
+	int total = stream.frame_count * (int)stream.channels;
+	if (stream.samples && total > 0) {
+		for (int i = 0; i < NB_EDITOR_INSPECTOR_WAV_PEAKS; i++) {
+			int begin = total * i / NB_EDITOR_INSPECTOR_WAV_PEAKS;
+			int end = total * (i + 1) / NB_EDITOR_INSPECTOR_WAV_PEAKS;
+			int peak = 0;
+			for (int j = begin; j < end; j++) {
+				int sample = (int)stream.samples[j];
+				if (sample < 0) { sample = -sample; }
+				if (sample > peak) { peak = sample; }
+			}
+			state->peaks[i] = (float)peak / 32768.0f;
+		}
+	}
+	audio_stream_free(&stream);
+	editor_inspector_set_resource(editor, NB_EDITOR_INSPECTOR_WAV, path);
+}
+
+static void editor_inspector_open_resource(editor_t* editor, engine_t* engine, const char* path) {
+	if (!editor || !path || !*path) { return; }
+	const char* ext = editor_fs_ext(path);
+	if (strcmp(ext, "clut") == 0) { editor_inspector_load_clut(editor, path); }
+	else if (strcmp(ext, "tres") == 0) { editor_inspector_load_tres(editor, engine, path); }
+	else if (strcmp(ext, "wav") == 0) { editor_inspector_load_wav(editor, engine, path); }
+}
+
+static void editor_inspector_save_clut(editor_t* editor) {
+	editor_clut_state_t* state = &editor->inspector_clut;
+	char buf[8192];
+	int off = 0;
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "%d\n", state->count)) { return; }
+	for (int i = 0; i < state->count; i++) {
+		if (!editor_inspector_append(buf, sizeof(buf), &off, "%d %d %d\n", (int)state->r[i], (int)state->g[i], (int)state->b[i])) { return; }
+	}
+	if (editor_fs_write_text(editor->inspector_path, buf, (size_t)off)) {
+		editor->inspector_dirty = 0;
+		editor_set_status(editor, "clut saved");
+	}
+	else {
+		editor_set_status(editor, "failed to save clut");
+	}
+}
+
+static void editor_inspector_save_tres(editor_t* editor) {
+	editor_tres_state_t* state = &editor->inspector_tres;
+	char buf[16384];
+	int off = 0;
+	if (state->header[0]) {
+		if (!editor_inspector_append(buf, sizeof(buf), &off, "%s\n\n", state->header)) { return; }
+	}
+	else if (!editor_inspector_append(buf, sizeof(buf), &off, "[gd_resource type=\"NBPS1Material\" load_steps=%d format=3]\n\n", state->ext_count + 1)) { return; }
+	for (int i = 0; i < state->ext_count; i++) {
+		if (!editor_inspector_append(buf, sizeof(buf), &off, "%s\n", state->ext[i])) { return; }
+	}
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "\n[resource]\n")) { return; }
+	if (state->name[0] && !editor_inspector_append(buf, sizeof(buf), &off, "resource_name = \"%s\"\n", state->name)) { return; }
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "texture = ExtResource(\"%s\")\n", state->texture)) { return; }
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "palette = ExtResource(\"%s\")\n", state->palette)) { return; }
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "blend_mode = \"%s\"\n", editor_inspector_blend_name(state->blend_mode))) { return; }
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "shade_mode = \"%s\"\n", editor_inspector_shade_name(state->shade_mode))) { return; }
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "fog_enabled = %s\n", state->fog_enabled ? "true" : "false")) { return; }
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "vertex_color_tint = Color(%g, %g, %g, %g)\n", state->tint[0], state->tint[1], state->tint[2], state->tint[3])) { return; }
+	if (!editor_inspector_append(buf, sizeof(buf), &off, "transparent_index = %d\n", state->transparent_index)) { return; }
+	if (editor_fs_write_text(editor->inspector_path, buf, (size_t)off)) {
+		editor->inspector_dirty = 0;
+		editor_set_status(editor, "tres saved");
+	}
+	else {
+		editor_set_status(editor, "failed to save tres");
+	}
+}
+
+static void editor_inspector_autosave(editor_t* editor, int force) {
+	if (!editor || !editor->inspector_dirty) { return; }
+	if (!force && editor_now_seconds() - editor->inspector_dirty_time < 0.35) { return; }
+	editor->inspector_dirty_time = editor_now_seconds();
+	if (editor->inspector_kind == NB_EDITOR_INSPECTOR_CLUT) {
+		editor_inspector_save_clut(editor);
+	}
+	else if (editor->inspector_kind == NB_EDITOR_INSPECTOR_TRES) {
+		editor_inspector_save_tres(editor);
+	}
+	else {
+		editor->inspector_dirty = 0;
+	}
 }
 
 static void editor_snapshot_free(editor_snapshot_t* s) {
@@ -151,6 +597,7 @@ static nb_result_t editor_restore_snapshot(editor_t* editor, engine_t* engine, c
 	engine->scene_doc = next_doc;
 	engine->scene_doc.dirty = 1;
 	editor->selected_entity = snap->selected_entity;
+	editor_inspector_show_node(editor);
 	editor_hierarchy_clear_state(editor);
 	editor_fix_selection(editor, engine);
 	return NB_RESULT_OK;
@@ -261,6 +708,7 @@ static void editor_tab_load(editor_t* editor, const editor_scene_tab_t* tab) {
 	editor->camera_yaw = tab->camera_yaw;
 	editor->camera_pitch = tab->camera_pitch;
 	editor->selected_entity = tab->selected_entity;
+	editor_inspector_show_node(editor);
 	editor->hierarchy_scroll_x = tab->hierarchy_scroll_x;
 	editor->hierarchy_scroll_y = tab->hierarchy_scroll_y;
 	memcpy(editor->hierarchy_expanded, tab->hierarchy_expanded, sizeof(editor->hierarchy_expanded));
@@ -586,6 +1034,10 @@ static void editor_explorer_activate(editor_t* editor, engine_t* engine, const c
 	}
 	if (strcmp(editor_fs_ext(path), "tscn") == 0) {
 		editor_request_open_scene(editor, engine, path);
+		return;
+	}
+	if (strcmp(editor_fs_ext(path), "clut") == 0 || strcmp(editor_fs_ext(path), "tres") == 0 || strcmp(editor_fs_ext(path), "wav") == 0) {
+		editor_inspector_open_resource(editor, engine, path);
 		return;
 	}
 	char msg[256];
@@ -1610,6 +2062,8 @@ int editor_init(editor_t* editor, engine_t* engine) {
 	editor_hierarchy_clear_state(editor);
 	editor->enabled = engine->config.editor_enabled ? 1 : 0;
 	editor->selected_entity = NB_ENTITY_INVALID;
+	editor->inspector_color_index = -1;
+	editor->inspector_wav_voice = -1;
 	snprintf(editor->scene_path, sizeof(editor->scene_path), "%s", engine->config.scene_path);
 	snprintf(editor->new_node_name, sizeof(editor->new_node_name), "%s", "NewNode");
 	editor->camera_pos[0] = 0.0f;
@@ -1783,6 +2237,7 @@ int editor_init(editor_t* editor, engine_t* engine) {
 void editor_shutdown(editor_t* editor, engine_t* engine) {
 	(void)engine;
 	if (!editor) { return; }
+	editor_inspector_autosave(editor, 1);
 
 	if (editor->ready) {
 		for (int i = 0; i < 4; i++) {
@@ -2300,6 +2755,7 @@ static void editor_hierarchy_commit_drag(editor_t* editor, engine_t* engine) {
 				unsigned char* state = editor_hierarchy_state_ptr(editor, parent);
 				if (state) { *state = 1; }
 				editor->selected_entity = id;
+				editor_inspector_show_node(editor);
 				engine->scene_doc.dirty = 1;
 				editor_set_status(editor, parent == NB_ENTITY_INVALID ? "node moved to root" : "node moved");
 			}
@@ -2417,6 +2873,7 @@ static void editor_create_node(editor_t* editor, engine_t* engine, unsigned int 
 	if (editor->new_node_name[0]) { scene_set_node_name(engine->scene_graph, id, editor->new_node_name); }
 	if (parent != NB_ENTITY_INVALID && scene_get_node(engine->scene_graph, parent)) { scene_set_node_parent(engine->scene_graph, id, parent); }
 	editor->selected_entity = id;
+	editor_inspector_show_node(editor);
 	unsigned char* state = editor_hierarchy_state_ptr(editor, id);
 	if (state) { *state = 0; }
 	state = editor_hierarchy_state_ptr(editor, parent);
@@ -2433,6 +2890,7 @@ static void editor_duplicate_node(editor_t* editor, engine_t* engine, unsigned i
 	if (!scene_duplicate_entity(engine->scene_graph, id)) { return; }
 	unsigned int copy = (unsigned int)engine->scene_graph->entity_count;
 	editor->selected_entity = copy;
+	editor_inspector_show_node(editor);
 	unsigned char* state = editor_hierarchy_state_ptr(editor, copy);
 	if (state) { *state = 0; }
 	state = editor_hierarchy_state_ptr(editor, source->parent);
@@ -2451,6 +2909,7 @@ static void editor_delete_node(editor_t* editor, engine_t* engine, unsigned int 
 	unsigned char* state = editor_hierarchy_state_ptr(editor, id);
 	if (state) { *state = 0; }
 	editor->selected_entity = scene_get_node(engine->scene_graph, parent) ? parent : NB_ENTITY_INVALID;
+	editor_inspector_show_node(editor);
 	editor->hierarchy_context_entity = NB_ENTITY_INVALID;
 	if (editor->rename_entity == id) { editor->rename_entity = NB_ENTITY_INVALID; editor->rename_focus = 0; }
 	if (editor->reparent_source == id) { editor->reparent_source = NB_ENTITY_INVALID; editor->reparent_open = 0; }
@@ -2521,7 +2980,10 @@ static void editor_draw_hierarchy_node(editor_t* editor, engine_t* engine, scene
 		nk_bool previous = selected;
 		nk_bool opened = nk_tree_element_image_push_hashed_base(ctx, NK_TREE_NODE, NULL, label, (int)strlen(label), &collapse, &selected);
 		if (!force_open && state) { *state = collapse == NK_MAXIMIZED ? 1 : 0; }
-		if (selected != previous) { editor->selected_entity = node->id; }
+		if (selected != previous) {
+			editor->selected_entity = node->id;
+			editor_inspector_show_node(editor);
+		}
 		editor_hierarchy_store_row(rows, ctx, node->id, row_h);
 		if (opened) {
 			for (int i = 0; i < node->child_count; i++) {
@@ -2533,7 +2995,10 @@ static void editor_draw_hierarchy_node(editor_t* editor, engine_t* engine, scene
 	}
 	else {
 		nk_bool selected = editor->selected_entity == node->id ? nk_true : nk_false;
-		if (nk_selectable_label(ctx, label, NK_TEXT_LEFT, &selected)) { editor->selected_entity = node->id; }
+		if (nk_selectable_label(ctx, label, NK_TEXT_LEFT, &selected)) {
+			editor->selected_entity = node->id;
+			editor_inspector_show_node(editor);
+		}
 		editor_hierarchy_store_row(rows, ctx, node->id, row_h);
 	}
 }
@@ -2579,6 +3044,7 @@ static void editor_draw_hierarchy_context_menu(editor_t* editor, engine_t* engin
 		}
 		else {
 			editor->selected_entity = id;
+			editor_inspector_show_node(editor);
 			nk_layout_row_dynamic(ctx, 22, 1);
 			if (nk_contextual_item_label(ctx, "Rename", NK_TEXT_LEFT)) {
 				editor_start_rename(editor, engine, id);
@@ -2659,6 +3125,7 @@ static void editor_draw_hierarchy(editor_t* editor, engine_t* engine, int win_w,
 				editor->hierarchy_context_rect[2] = rows.rows[i].rect.w;
 				editor->hierarchy_context_rect[3] = rows.rows[i].rect.h;
 				editor->selected_entity = rows.rows[i].id;
+				editor_inspector_show_node(editor);
 			}
 			if (editor->hierarchy_context_entity == NB_ENTITY_INVALID && editor->rename_entity == NB_ENTITY_INVALID && !editor->reparent_open && !editor->hierarchy_drag_active && editor->hierarchy_drag_candidate == NB_ENTITY_INVALID && !editor->want_capture_keyboard && rows.count > 0) {
 				int index = -1;
@@ -2674,19 +3141,29 @@ static void editor_draw_hierarchy(editor_t* editor, engine_t* engine, int win_w,
 					editor_delete_node(editor, engine, rows.rows[index].id);
 				}
 				else if (nk_input_is_key_pressed(&ctx->input, NK_KEY_UP)) {
-					if (index > 0) { editor->selected_entity = rows.rows[index - 1].id; }
+					if (index > 0) {
+						editor->selected_entity = rows.rows[index - 1].id;
+						editor_inspector_show_node(editor);
+					}
 				}
 				else if (nk_input_is_key_pressed(&ctx->input, NK_KEY_DOWN)) {
-					if (index + 1 < rows.count) { editor->selected_entity = rows.rows[index + 1].id; }
+					if (index + 1 < rows.count) {
+						editor->selected_entity = rows.rows[index + 1].id;
+						editor_inspector_show_node(editor);
+					}
 				}
 				else if (nk_input_is_key_pressed(&ctx->input, NK_KEY_LEFT)) {
 					if (current && current->child_count > 0) {
 						unsigned char* state = editor_hierarchy_state_ptr(editor, current->id);
 						if (state && *state) { *state = 0; }
-						else if (current->parent != NB_ENTITY_INVALID) { editor->selected_entity = current->parent; }
+						else if (current->parent != NB_ENTITY_INVALID) {
+							editor->selected_entity = current->parent;
+							editor_inspector_show_node(editor);
+						}
 					}
 					else if (current && current->parent != NB_ENTITY_INVALID) {
 						editor->selected_entity = current->parent;
+						editor_inspector_show_node(editor);
 					}
 				}
 				else if (nk_input_is_key_pressed(&ctx->input, NK_KEY_RIGHT)) {
@@ -2695,7 +3172,10 @@ static void editor_draw_hierarchy(editor_t* editor, engine_t* engine, int win_w,
 						if (state && !*state) { *state = 1; }
 						else {
 							node_t* child = scene_get_node(engine->scene_graph, current->children[0]);
-							if (child) { editor->selected_entity = child->id; }
+							if (child) {
+								editor->selected_entity = child->id;
+								editor_inspector_show_node(editor);
+							}
 						}
 					}
 				}
@@ -2750,6 +3230,266 @@ static void editor_draw_reparent(editor_t* editor, engine_t* engine, int win_w, 
 	nk_end(ctx);
 }
 
+static int editor_inspector_labeled_edit(struct nk_context* ctx, const char* label, char* buf, int cap) {
+	float widths[2];
+	float avail = ctx->current->layout->bounds.w;
+	if (avail < 140.0f) { avail = 140.0f; }
+	widths[0] = 82.0f;
+	widths[1] = avail - 82.0f;
+	nk_layout_row(ctx, NK_STATIC, 22, 2, widths);
+	nk_label(ctx, label, NK_TEXT_LEFT);
+	nk_flags flags = nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD, buf, cap, nk_filter_default);
+	return (flags & (NK_EDIT_COMMITTED | NK_EDIT_DEACTIVATED)) ? 1 : 0;
+}
+
+static void editor_inspector_draw_color_picker(editor_t* editor, struct nk_context* ctx) {
+	struct nk_command_buffer* canvas = nk_window_get_canvas(ctx);
+	nk_layout_row_dynamic(ctx, 112.0f, 1);
+	struct nk_rect square;
+	nk_widget(&square, ctx);
+	float side = square.w < square.h ? square.w : square.h;
+	if (side < 24.0f) { return; }
+	square.x += (square.w - side) * 0.5f;
+	square.y += (square.h - side) * 0.5f;
+	square.w = side;
+	square.h = side;
+	if (nk_input_is_mouse_hovering_rect(&ctx->input, square) && nk_input_is_mouse_down(&ctx->input, NK_BUTTON_LEFT)) {
+		float mx = ((float)ctx->input.mouse.pos.x - square.x) / square.w;
+		float my = ((float)ctx->input.mouse.pos.y - square.y) / square.h;
+		editor->inspector_color_s = mx < 0.0f ? 0.0f : mx > 1.0f ? 1.0f : mx;
+		editor->inspector_color_v = 1.0f - (my < 0.0f ? 0.0f : my > 1.0f ? 1.0f : my);
+		editor_inspector_apply_picker_color(editor);
+	}
+	int cols = 28;
+	int rows = 22;
+	float cell_w = square.w / (float)cols;
+	float cell_h = square.h / (float)rows;
+	for (int y = 0; y < rows; y++) {
+		float v = 1.0f - (float)y / (float)(rows - 1);
+		for (int x = 0; x < cols; x++) {
+			float s = (float)x / (float)(cols - 1);
+			struct nk_rect cell = nk_rect(square.x + (float)x * cell_w, square.y + (float)y * cell_h, cell_w + 0.5f, cell_h + 0.5f);
+			nk_fill_rect(canvas, cell, 0, editor_inspector_hsv_color(editor->inspector_color_h, s, v));
+		}
+	}
+	nk_stroke_rect(canvas, square, 1.0f, 0, nk_rgb(80, 80, 80));
+	float px = square.x + editor->inspector_color_s * square.w;
+	float py = square.y + (1.0f - editor->inspector_color_v) * square.h;
+	struct nk_rect marker = nk_rect(px - 5.0f, py - 5.0f, 10.0f, 10.0f);
+	nk_fill_circle(canvas, marker, nk_rgb(255, 255, 255));
+	nk_stroke_circle(canvas, marker, 1.0f, nk_rgb(20, 20, 20));
+	nk_layout_row_dynamic(ctx, 16, 1);
+	nk_labelf(ctx, NK_TEXT_LEFT, "Hue %d°", (int)editor->inspector_color_h);
+	nk_layout_row_dynamic(ctx, 18, 1);
+	struct nk_rect hue;
+	nk_widget(&hue, ctx);
+	if (nk_input_is_mouse_hovering_rect(&ctx->input, hue) && nk_input_is_mouse_down(&ctx->input, NK_BUTTON_LEFT)) {
+		float t = ((float)ctx->input.mouse.pos.x - hue.x) / hue.w;
+		editor->inspector_color_h = (t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t) * 360.0f;
+		editor_inspector_apply_picker_color(editor);
+	}
+	float hue_w = hue.w / 180.0f;
+	for (int i = 0; i < 180; i++) {
+		struct nk_rect part = nk_rect(hue.x + (float)i * hue_w, hue.y, hue_w + 0.5f, hue.h);
+		nk_fill_rect(canvas, part, 0, editor_inspector_hsv_color((float)i * 2.0f, 1.0f, 1.0f));
+	}
+	float hx = hue.x + editor->inspector_color_h / 360.0f * hue.w;
+	nk_stroke_rect(canvas, nk_rect(hx - 3.0f, hue.y - 2.0f, 6.0f, hue.h + 4.0f), 2.0f, 0, nk_rgb(255, 255, 255));
+	if (editor->inspector_color_target == NB_EDITOR_COLOR_TARGET_TRES) {
+		nk_layout_row_dynamic(ctx, 16, 1);
+		nk_labelf(ctx, NK_TEXT_LEFT, "Alpha %d%%", (int)(editor->inspector_color_a * 100.0f));
+		nk_layout_row_dynamic(ctx, 18, 1);
+		struct nk_rect alpha;
+		nk_widget(&alpha, ctx);
+		if (nk_input_is_mouse_hovering_rect(&ctx->input, alpha) && nk_input_is_mouse_down(&ctx->input, NK_BUTTON_LEFT)) {
+			float t = ((float)ctx->input.mouse.pos.x - alpha.x) / alpha.w;
+			editor->inspector_color_a = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
+			editor_inspector_apply_picker_color(editor);
+		}
+		struct nk_color base = editor_inspector_hsv_color(editor->inspector_color_h, editor->inspector_color_s, editor->inspector_color_v);
+		float alpha_w = alpha.w / 64.0f;
+		for (int i = 0; i < 64; i++) {
+			float t = (float)i / 63.0f;
+			struct nk_color part_color = nk_rgb((int)(32.0f + ((float)base.r - 32.0f) * t), (int)(32.0f + ((float)base.g - 32.0f) * t), (int)(32.0f + ((float)base.b - 32.0f) * t));
+			nk_fill_rect(canvas, nk_rect(alpha.x + (float)i * alpha_w, alpha.y, alpha_w + 0.5f, alpha.h), 0, part_color);
+		}
+		float ax = alpha.x + editor->inspector_color_a * alpha.w;
+		nk_stroke_rect(canvas, nk_rect(ax - 3.0f, alpha.y - 2.0f, 6.0f, alpha.h + 4.0f), 2.0f, 0, nk_rgb(255, 255, 255));
+	}
+	nk_layout_row_dynamic(ctx, 16, 1);
+	nk_label(ctx, "HEX", NK_TEXT_LEFT);
+	float widths[2];
+	float avail = ctx->current->layout->bounds.w;
+	if (avail < 140.0f) { avail = 140.0f; }
+	widths[0] = 56.0f;
+	widths[1] = avail - 56.0f;
+	nk_layout_row(ctx, NK_STATIC, 22, 2, widths);
+	if (nk_button_label(ctx, "Copy")) {
+		SDL_SetClipboardText(editor->inspector_color_hex);
+		editor_set_status(editor, "hex copied");
+	}
+	nk_flags flags = nk_edit_string_zero_terminated(ctx, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER, editor->inspector_color_hex, (int)sizeof(editor->inspector_color_hex), nk_filter_default);
+	if (flags & (NK_EDIT_COMMITTED | NK_EDIT_DEACTIVATED)) {
+		if (!editor_inspector_parse_hex(editor, editor->inspector_color_hex)) {
+			struct nk_color color = editor_inspector_hsv_color(editor->inspector_color_h, editor->inspector_color_s, editor->inspector_color_v);
+			editor_inspector_update_hex(editor, color);
+		}
+	}
+}
+
+static void editor_inspector_draw_clut(editor_t* editor, struct nk_context* ctx, int panel_h) {
+	editor_clut_state_t* state = &editor->inspector_clut;
+	nk_layout_row_dynamic(ctx, 18, 1);
+	nk_labelf(ctx, NK_TEXT_LEFT, "clut: %s%s", editor->inspector_path, editor->inspector_dirty ? " *" : "");
+	int count = state->count;
+	if (nk_property_int(ctx, "Colors", 1, &count, NB_EDITOR_INSPECTOR_CLUT_MAX, 1, 1)) {
+		for (int i = state->count; i < count; i++) {
+			state->r[i] = 0;
+			state->g[i] = 0;
+			state->b[i] = 0;
+		}
+		state->count = count;
+		editor_inspector_mark_dirty(editor);
+	}
+	if (editor->inspector_color_index >= count) { editor->inspector_color_index = -1; }
+	float picker_h = 220.0f;
+	float height = (float)panel_h - 96.0f - picker_h;
+	if (height < 70.0f) { height = 70.0f; }
+	nk_layout_row_dynamic(ctx, height, 1);
+	if (nk_group_scrolled_offset_begin(ctx, &editor->inspector_scroll_x, &editor->inspector_scroll_y, "clut_colors", NK_WINDOW_BORDER)) {
+		for (int i = 0; i < state->count; i++) {
+			float widths[3];
+			float avail = ctx->current->layout->bounds.w;
+			if (avail < 180.0f) { avail = 180.0f; }
+			widths[0] = 32.0f;
+			widths[1] = 44.0f;
+			widths[2] = avail - 76.0f;
+			nk_layout_row(ctx, NK_STATIC, 22, 3, widths);
+			nk_labelf(ctx, NK_TEXT_LEFT, "%d", i);
+			struct nk_rect swatch;
+			nk_widget(&swatch, ctx);
+			struct nk_color color = nk_rgb((int)state->r[i], (int)state->g[i], (int)state->b[i]);
+			nk_fill_rect(nk_window_get_canvas(ctx), swatch, 0, color);
+			nk_stroke_rect(nk_window_get_canvas(ctx), swatch, 1, 0, i == editor->inspector_color_index ? nk_rgb(220, 220, 220) : nk_rgb(90, 90, 90));
+			nk_labelf(ctx, NK_TEXT_LEFT, "#%02X%02X%02X", (int)state->r[i], (int)state->g[i], (int)state->b[i]);
+			if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, swatch)) {
+				editor_inspector_select_clut_color(editor, i);
+			}
+		}
+		nk_group_scrolled_end(ctx);
+	}
+	nk_layout_row_dynamic(ctx, 18, 1);
+	nk_label(ctx, "Color", NK_TEXT_LEFT);
+	if (editor->inspector_color_index < 0 || editor->inspector_color_index >= state->count) {
+		nk_layout_row_dynamic(ctx, 18, 1);
+		nk_label(ctx, "Select a color from the list", NK_TEXT_LEFT);
+		return;
+	}
+	int index = editor->inspector_color_index;
+	nk_layout_row_dynamic(ctx, 18, 1);
+	nk_labelf(ctx, NK_TEXT_LEFT, "color %d: #%02X%02X%02X", index, (int)state->r[index], (int)state->g[index], (int)state->b[index]);
+	editor_inspector_draw_color_picker(editor, ctx);
+}
+
+static void editor_inspector_draw_tres(editor_t* editor, struct nk_context* ctx, int panel_h) {
+	editor_tres_state_t* state = &editor->inspector_tres;
+	nk_layout_row_dynamic(ctx, 18, 1);
+	nk_labelf(ctx, NK_TEXT_LEFT, "tres: %s%s", editor->inspector_path, editor->inspector_dirty ? " *" : "");
+	editor->inspector_color_target = NB_EDITOR_COLOR_TARGET_TRES;
+	float height = (float)panel_h - 320.0f;
+	if (height < 100.0f) { height = 100.0f; }
+	nk_layout_row_dynamic(ctx, height, 1);
+	if (nk_group_scrolled_offset_begin(ctx, &editor->inspector_scroll_x, &editor->inspector_scroll_y, "tres_fields", NK_WINDOW_BORDER)) {
+		nk_layout_row_dynamic(ctx, 20, 1);
+		nk_label(ctx, "Resource", NK_TEXT_LEFT);
+		if (editor_inspector_labeled_edit(ctx, "Name", state->name, (int)sizeof(state->name))) { editor_inspector_mark_dirty(editor); }
+		if (editor_inspector_labeled_edit(ctx, "Texture", state->texture, (int)sizeof(state->texture))) { editor_inspector_mark_dirty(editor); }
+		if (editor_inspector_labeled_edit(ctx, "Palette", state->palette, (int)sizeof(state->palette))) { editor_inspector_mark_dirty(editor); }
+		static const char* const blend_items[] = { "none", "alpha_50", "add", "subtract", "add_quarter" };
+		static const char* const shade_items[] = { "flat", "gouraud" };
+		float widths[2];
+		float avail = ctx->current->layout->bounds.w;
+		if (avail < 140.0f) { avail = 140.0f; }
+		widths[0] = 82.0f;
+		widths[1] = avail - 82.0f;
+		nk_layout_row(ctx, NK_STATIC, 22, 2, widths);
+		nk_label(ctx, "Blend", NK_TEXT_LEFT);
+		int blend = nk_combo(ctx, blend_items, 5, state->blend_mode, 18, nk_vec2(widths[1], 220));
+		if (blend != state->blend_mode) { state->blend_mode = blend; editor_inspector_mark_dirty(editor); }
+		nk_layout_row(ctx, NK_STATIC, 22, 2, widths);
+		nk_label(ctx, "Shade", NK_TEXT_LEFT);
+		int shade = nk_combo(ctx, shade_items, 2, state->shade_mode, 18, nk_vec2(widths[1], 120));
+		if (shade != state->shade_mode) { state->shade_mode = shade; editor_inspector_mark_dirty(editor); }
+		nk_layout_row_dynamic(ctx, 22, 1);
+		if (nk_checkbox_label(ctx, "Fog", &state->fog_enabled)) { editor_inspector_mark_dirty(editor); }
+		if (nk_property_int(ctx, "Transparent", 0, &state->transparent_index, 65535, 1, 1)) { editor_inspector_mark_dirty(editor); }
+		nk_labelf(ctx, NK_TEXT_LEFT, "ext resources: %d", state->ext_count);
+		nk_group_scrolled_end(ctx);
+	}
+	nk_layout_row_dynamic(ctx, 18, 1);
+	nk_label(ctx, "Vertex Color Tint", NK_TEXT_LEFT);
+	editor_inspector_draw_color_picker(editor, ctx);
+}
+
+static void editor_inspector_draw_wav(editor_t* editor, engine_t* engine, struct nk_context* ctx, int panel_h) {
+	(void)panel_h;
+	editor_wav_state_t* state = &editor->inspector_wav;
+	double duration = state->sample_rate > 0 ? (double)state->frame_count / (double)state->sample_rate : 0.0;
+	double now = editor_now_seconds();
+	int playing = editor->inspector_wav_voice >= 0 && now < editor->inspector_wav_end;
+	if (editor->inspector_wav_voice >= 0 && now >= editor->inspector_wav_end) {
+		audio_stop_voice(engine && engine->audio.ready ? &engine->audio : NULL, editor->inspector_wav_voice);
+		editor->inspector_wav_voice = -1;
+		playing = 0;
+	}
+	nk_layout_row_dynamic(ctx, 18, 1);
+	nk_labelf(ctx, NK_TEXT_LEFT, "wav: %s", editor->inspector_path);
+	if (nk_button_label(ctx, playing ? "Stop" : "Play")) {
+		if (playing) {
+			audio_stop_voice(engine && engine->audio.ready ? &engine->audio : NULL, editor->inspector_wav_voice);
+			editor->inspector_wav_voice = -1;
+			editor_set_status(editor, "wav playback stopped");
+		}
+		else {
+			audio_stream_t stream;
+			memset(&stream, 0, sizeof(stream));
+			if (!wav_load(editor->inspector_path, &stream)) {
+				editor_set_status(editor, "failed to play wav");
+			}
+			else {
+				int slot = audio_play_stream(engine && engine->audio.ready ? &engine->audio : NULL, &stream, 1.0f, 0);
+				audio_stream_free(&stream);
+				if (slot < 0) {
+					editor_set_status(editor, "audio unavailable");
+				}
+				else {
+					editor->inspector_wav_voice = slot;
+					editor->inspector_wav_end = now + duration;
+					editor_set_status(editor, "wav playing");
+				}
+			}
+		}
+	}
+	nk_layout_row_dynamic(ctx, 18, 1);
+	nk_label(ctx, "Read-only", NK_TEXT_LEFT);
+	nk_labelf(ctx, NK_TEXT_LEFT, "sample rate: %d Hz", state->sample_rate);
+	nk_labelf(ctx, NK_TEXT_LEFT, "channels: %d", state->channels);
+	nk_labelf(ctx, NK_TEXT_LEFT, "frames: %d", state->frame_count);
+	nk_labelf(ctx, NK_TEXT_LEFT, "duration: %.3f s", duration);
+	nk_layout_row_dynamic(ctx, 64.0f, 1);
+	struct nk_rect bounds;
+	nk_widget(&bounds, ctx);
+	nk_fill_rect(nk_window_get_canvas(ctx), bounds, 0, nk_rgb(20, 20, 20));
+	nk_stroke_rect(nk_window_get_canvas(ctx), bounds, 1, 0, nk_rgb(70, 70, 70));
+	float bar_w = bounds.w / (float)NB_EDITOR_INSPECTOR_WAV_PEAKS;
+	for (int i = 0; i < NB_EDITOR_INSPECTOR_WAV_PEAKS; i++) {
+		float bar_h = state->peaks[i] * (bounds.h - 4.0f);
+		if (bar_h < 1.0f) { bar_h = 1.0f; }
+		struct nk_rect bar = nk_rect(bounds.x + (float)i * bar_w, bounds.y + bounds.h - 2.0f - bar_h, bar_w - 1.0f, bar_h);
+		nk_fill_rect(nk_window_get_canvas(ctx), bar, 0, nk_rgb(80, 150, 200));
+	}
+}
+
 static void editor_draw_inspector(editor_t* editor, engine_t* engine, int win_w, int win_h) {
 	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
 	int panel_w = 340;
@@ -2759,21 +3499,36 @@ static void editor_draw_inspector(editor_t* editor, engine_t* engine, int win_w,
 	if (panel_x < 360) { panel_x = 360; panel_w = win_w - panel_x - 10; }
 	if (panel_w < 240) { panel_w = 240; }
 	if (panel_h < 180) { panel_h = 180; }
+	if (editor->inspector_kind != NB_EDITOR_INSPECTOR_WAV && editor->inspector_wav_voice >= 0) {
+		audio_stop_voice(engine && engine->audio.ready ? &engine->audio : NULL, editor->inspector_wav_voice);
+		editor->inspector_wav_voice = -1;
+	}
+	node_t* node = NULL;
 	if (nk_begin(ctx, "Inspector", nk_rect((float)panel_x, (float)panel_y, (float)panel_w, (float)panel_h), NK_WINDOW_BORDER | NK_WINDOW_TITLE)) {
-		nk_layout_row_dynamic(ctx, 18, 1);
+		if (editor->inspector_kind == NB_EDITOR_INSPECTOR_CLUT) {
+			editor_inspector_draw_clut(editor, ctx, panel_h);
+			goto inspector_done;
+		}
+		else if (editor->inspector_kind == NB_EDITOR_INSPECTOR_TRES) {
+			editor_inspector_draw_tres(editor, ctx, panel_h);
+			goto inspector_done;
+		}
+		else if (editor->inspector_kind == NB_EDITOR_INSPECTOR_WAV) {
+			editor_inspector_draw_wav(editor, engine, ctx, panel_h);
+			goto inspector_done;
+		}
 		if (!engine->scene_graph || editor->selected_entity == NB_ENTITY_INVALID) {
+			nk_layout_row_dynamic(ctx, 18, 1);
 			nk_label(ctx, "No node selected", NK_TEXT_LEFT);
-			nk_end(ctx);
-			return;
+			goto inspector_done;
 		}
-
-		node_t* node = scene_get_node(engine->scene_graph, editor->selected_entity);
+		node = scene_get_node(engine->scene_graph, editor->selected_entity);
 		if (!node) {
+			nk_layout_row_dynamic(ctx, 18, 1);
 			nk_label(ctx, "Selected node missing", NK_TEXT_LEFT);
-			nk_end(ctx);
-			return;
+			goto inspector_done;
 		}
-
+		nk_layout_row_dynamic(ctx, 18, 1);
 		nk_labelf(ctx, NK_TEXT_LEFT, "id: %u", (unsigned int)node->id);
 		if (editor->inspector_name_entity != node->id) {
 			editor->inspector_name_entity = node->id;
@@ -2870,6 +3625,8 @@ static void editor_draw_inspector(editor_t* editor, engine_t* engine, int win_w,
 				editor_set_status(editor, "camera focused");
 			}
 		}
+	inspector_done:
+		if (nk_item_is_any_active(ctx)) { editor->inspector_editing = 1; }
 	}
 	nk_end(ctx);
 }
@@ -2908,6 +3665,7 @@ static void editor_apply_gizmo(editor_t* editor, engine_t* engine) {
 		if (editor->tool == NB_EDITOR_TOOL_SELECT) {
 			if (editor_pick_node(editor, engine, mx, my, &picked)) {
 				editor->selected_entity = picked;
+				editor_inspector_show_node(editor);
 				editor_set_status(editor, "node selected");
 			}
 			return;
@@ -2917,6 +3675,7 @@ static void editor_apply_gizmo(editor_t* editor, engine_t* engine) {
 		if (axis < 0) {
 			if (editor_pick_node(editor, engine, mx, my, &picked)) {
 				editor->selected_entity = picked;
+				editor_inspector_show_node(editor);
 			}
 			return;
 		}
@@ -3282,6 +4041,7 @@ void editor_update(editor_t* editor, engine_t* engine) {
 
 	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
 	nk_input_end(ctx);
+	editor_inspector_autosave(editor, 0);
 
 	editor->want_capture_mouse = nk_item_is_any_active(ctx) || nk_window_is_any_hovered(ctx);
 	editor->want_capture_keyboard = nk_item_is_any_active(ctx);

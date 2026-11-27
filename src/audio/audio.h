@@ -45,6 +45,8 @@ int audio_init(audio_system_t* audio);
 void audio_shutdown(audio_system_t* audio);
 int audio_play(audio_system_t* audio, resource_store_t* store, audio_id id, float volume);
 int audio_play_ex(audio_system_t* audio, resource_store_t* store, audio_id id, float volume, int loop);
+int audio_play_stream(audio_system_t* audio, const audio_stream_t* stream, float volume, int loop);
+void audio_stop_voice(audio_system_t* audio, int voice);
 int audio_stop(audio_system_t* audio, resource_store_t* store, const char* name);
 int audio_set_volume(audio_system_t* audio, resource_store_t* store, const char* name, float volume);
 void audio_stop_all(audio_system_t* audio);

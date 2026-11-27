@@ -19,6 +19,10 @@ typedef enum {
 #define NB_EDITOR_EXPLORER_TREE_MAX 64
 #define NB_EDITOR_EXPLORER_TREE_ROWS_MAX 512
 #define NB_EDITOR_EXPLORER_HISTORY_MAX 32
+#define NB_EDITOR_INSPECTOR_CLUT_MAX 256
+#define NB_EDITOR_INSPECTOR_TRES_EXT_MAX 64
+#define NB_EDITOR_INSPECTOR_TRES_LINE_MAX 512
+#define NB_EDITOR_INSPECTOR_WAV_PEAKS 128
 
 typedef enum {
 	NB_EDITOR_DIALOG_NONE = 0,
@@ -31,6 +35,46 @@ typedef enum {
 	NB_EDITOR_DIALOG_OPEN_PROJECT = 7,
 	NB_EDITOR_DIALOG_NEW_PROJECT = 8
 } editor_dialog_kind_t;
+
+typedef enum {
+	NB_EDITOR_INSPECTOR_NODE = 0,
+	NB_EDITOR_INSPECTOR_CLUT = 1,
+	NB_EDITOR_INSPECTOR_TRES = 2,
+	NB_EDITOR_INSPECTOR_WAV = 3
+} editor_inspector_kind_t;
+
+typedef enum {
+	NB_EDITOR_COLOR_TARGET_CLUT = 0,
+	NB_EDITOR_COLOR_TARGET_TRES = 1
+} editor_color_target_t;
+
+typedef struct {
+	int count;
+	unsigned char r[NB_EDITOR_INSPECTOR_CLUT_MAX];
+	unsigned char g[NB_EDITOR_INSPECTOR_CLUT_MAX];
+	unsigned char b[NB_EDITOR_INSPECTOR_CLUT_MAX];
+} editor_clut_state_t;
+
+typedef struct {
+	char header[NB_EDITOR_INSPECTOR_TRES_LINE_MAX];
+	char ext[NB_EDITOR_INSPECTOR_TRES_EXT_MAX][NB_EDITOR_INSPECTOR_TRES_LINE_MAX];
+	int ext_count;
+	char name[64];
+	char texture[64];
+	char palette[64];
+	int blend_mode;
+	int shade_mode;
+	int fog_enabled;
+	float tint[4];
+	int transparent_index;
+} editor_tres_state_t;
+
+typedef struct {
+	int sample_rate;
+	int channels;
+	int frame_count;
+	float peaks[NB_EDITOR_INSPECTOR_WAV_PEAKS];
+} editor_wav_state_t;
 
 typedef struct {
 	char* data;
@@ -160,6 +204,25 @@ typedef struct {
 	int hierarchy_drop_zone;
 	char inspector_name[64];
 	unsigned int inspector_name_entity;
+	editor_inspector_kind_t inspector_kind;
+	char inspector_path[NB_EDITOR_FS_PATH_MAX];
+	unsigned int inspector_node_entity;
+	int inspector_dirty;
+	double inspector_dirty_time;
+	editor_clut_state_t inspector_clut;
+	editor_tres_state_t inspector_tres;
+	editor_wav_state_t inspector_wav;
+	int inspector_color_index;
+	editor_color_target_t inspector_color_target;
+	float inspector_color_h;
+	float inspector_color_s;
+	float inspector_color_v;
+	float inspector_color_a;
+	char inspector_color_hex[16];
+	int inspector_wav_voice;
+	double inspector_wav_end;
+	unsigned int inspector_scroll_x;
+	unsigned int inspector_scroll_y;
 	editor_scene_tab_t tabs[NB_EDITOR_SCENE_TABS_MAX];
 	int tab_count;
 	int active_tab;

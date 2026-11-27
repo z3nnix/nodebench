@@ -126,20 +126,15 @@ int audio_play(audio_system_t* audio, resource_store_t* store, audio_id id, floa
 	return audio_play_ex(audio, store, id, volume, 0);
 }
 
-int audio_play_ex(audio_system_t* audio, resource_store_t* store, audio_id id, float volume, int loop) {
-	if (!audio || !audio->ready || !store) {
-		return 0;
-	}
-
-	audio_stream_t* stream = resource_get_audio(store, id);
-	if (!stream || !stream->samples || stream->frame_count <= 0 || (stream->channels != 1 && stream->channels != 2)) {
-		return 0;
+static int audio_play_stream_internal(audio_system_t* audio, const audio_stream_t* stream, float volume, int loop, audio_id id) {
+	if (!audio || !audio->ready || !stream || !stream->samples || stream->frame_count <= 0 || (stream->channels != 1 && stream->channels != 2)) {
+		return -1;
 	}
 
 	size_t bytes = (size_t)stream->frame_count * (size_t)stream->channels * sizeof(int16_t);
 	int16_t* copy = (int16_t*)malloc(bytes);
 	if (!copy) {
-		return 0;
+		return -1;
 	}
 
 	memcpy(copy, stream->samples, bytes);
@@ -177,7 +172,37 @@ int audio_play_ex(audio_system_t* audio, resource_store_t* store, audio_id id, f
 	audio->voices[slot].id = id;
 	SDL_UnlockAudioDevice(audio->device);
 
-	return 1;
+	return slot;
+}
+
+int audio_play_ex(audio_system_t* audio, resource_store_t* store, audio_id id, float volume, int loop) {
+	if (!audio || !audio->ready || !store) {
+		return 0;
+	}
+
+	audio_stream_t* stream = resource_get_audio(store, id);
+	if (!stream) {
+		return 0;
+	}
+
+	return audio_play_stream_internal(audio, stream, volume, loop, id) >= 0 ? 1 : 0;
+}
+
+int audio_play_stream(audio_system_t* audio, const audio_stream_t* stream, float volume, int loop) {
+	return audio_play_stream_internal(audio, stream, volume, loop, NB_RESOURCE_INVALID_ID);
+}
+
+void audio_stop_voice(audio_system_t* audio, int voice) {
+	if (!audio || !audio->ready || voice < 0 || voice >= NB_AUDIO_MAX_VOICES) {
+		return;
+	}
+
+	SDL_LockAudioDevice(audio->device);
+	audio_voice_t* slot = &audio->voices[voice];
+	slot->active = 0;
+	free(slot->samples);
+	slot->samples = NULL;
+	SDL_UnlockAudioDevice(audio->device);
 }
 
 int audio_stop(audio_system_t* audio, resource_store_t* store, const char* name) {
