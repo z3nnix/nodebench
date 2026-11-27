@@ -169,6 +169,15 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	if (cli_status == 0) { return NB_RESULT_ERROR_CONFIG; }
 
 	if (!log_init(&engine->log, engine->config.log_file, engine->config.log_level)) { return NB_RESULT_ERROR_CONFIG; }
+
+	if (!asset_db_init(&engine->assets, root)) {
+		engine_log(engine, "asset database unavailable");
+	}
+
+	else {
+		engine->assets_ready = 1;
+	}
+
 	hud_init(&engine->hud);
 	input_init(&engine->input, &engine->config);
 
@@ -329,9 +338,10 @@ static void engine_apply_actions(engine_t* engine) {
 void engine_update(engine_t* engine, float dt) {
 	if (!engine) { return; }
 
+	int gameplay = strcmp(engine->config.mode, "game") == 0;
 	engine_apply_actions(engine);
 
-	if (engine->script_vm_ready) {
+	if (gameplay && engine->script_vm_ready) {
 		for (int i = 0; i < input_action_count(&engine->input); i++) {
 			const char* action = input_action_at(&engine->input, i);
 			if (input_was_pressed(&engine->input, action)) { wren_vm_on_input(&engine->script_vm, action); }
@@ -344,7 +354,7 @@ void engine_update(engine_t* engine, float dt) {
 
 	if (engine->scene.update) { engine->scene.update(engine, engine->scene.context, dt); }
 
-	if (!engine->paused && engine->scene_graph && engine->script_vm_ready) {
+	if (gameplay && !engine->paused && engine->scene_graph && engine->script_vm_ready) {
 		collision_events_t events;
 		if (collision_update(engine->scene_graph, &engine->collisions, &events)) {
 			for (int i = 0; i < events.count; i++) {
@@ -384,6 +394,9 @@ void engine_shutdown(engine_t* engine) {
 	if (engine->script_vm_ready) { wren_vm_shutdown(&engine->script_vm); }
 	engine->script_vm_ready = 0;
 	scene_doc_clear(&engine->scene_doc);
+
+	if (engine->assets_ready) { asset_db_shutdown(&engine->assets); }
+	engine->assets_ready = 0;
 
 	if (engine->scene_ready && engine->scene.shutdown) { engine->scene.shutdown(engine, engine->scene.context); }
 	engine->scene_graph = NULL;

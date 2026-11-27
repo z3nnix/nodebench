@@ -2,6 +2,8 @@
 
 #include <stdlib.h>
 
+#include "core/dynamic_array.h"
+
 static int draw_command_compare(const void* left, const void* right) {
 	const draw_command_t* a = (const draw_command_t*)left;
 	const draw_command_t* b = (const draw_command_t*)right;
@@ -24,7 +26,20 @@ void draw_list_init(draw_list_t* list) {
 
 	mat4_identity(&list->view);
 	mat4_identity(&list->view_projection);
+	list->commands = NULL;
 	list->count = 0;
+	list->capacity = 0;
+}
+
+void draw_list_free(draw_list_t* list) {
+	if (!list) {
+		return;
+	}
+
+	nb_array_free(list->commands);
+	list->commands = NULL;
+	list->count = 0;
+	list->capacity = 0;
 }
 
 void draw_list_clear(draw_list_t* list) {
@@ -53,9 +68,16 @@ int draw_list_push(draw_list_t* list, const mesh_t* mesh, const texture_t* textu
 }
 
 int draw_list_push_ex(draw_list_t* list, const mesh_t* mesh, const texture_t* texture, const material_t* material, const mat4_t* model, vec3_t tint) {
-	if (!list || !mesh || !material || list->count >= NB_DRAW_LIST_MAX_COMMANDS) {
+	if (!list || !mesh || !material) {
 		return 0;
 	}
+
+	void* commands = nb_array_grow(list->commands, &list->capacity, list->count + 1, sizeof(*list->commands));
+	if (!commands) {
+		return 0;
+	}
+
+	list->commands = commands;
 
 	draw_command_t* command = &list->commands[list->count];
 	command->mesh = mesh;

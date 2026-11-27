@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "core/dynamic_array.h"
 #include "core/engine.h"
 #include "core/input.h"
 #include "core/log.h"
@@ -1232,6 +1233,8 @@ void wren_vm_shutdown(wren_vm_t* vm) {
 	}
 
 	wrenFreeVM(vm->vm);
+	nb_array_free(vm->instances);
+	nb_array_free(vm->instance_ids);
 	memset(vm, 0, sizeof(*vm));
 }
 
@@ -1242,7 +1245,7 @@ void wren_vm_bind_scene(wren_vm_t* vm, scene_t* scene) {
 }
 
 int wren_vm_attach(wren_vm_t* vm, entity_id_t id, const char* module, const char* source) {
-	if (!vm || !vm->ready || !module || !*module || !source || !*source || vm->instance_count >= NB_WREN_MAX_INSTANCES) {
+	if (!vm || !vm->ready || !module || !*module || !source || !*source) {
 		return 0;
 	}
 
@@ -1264,6 +1267,19 @@ int wren_vm_attach(wren_vm_t* vm, entity_id_t id, const char* module, const char
 
 		return 0;
 	}
+
+	void* instances = nb_array_grow(vm->instances, &vm->instance_capacity, vm->instance_count + 1, sizeof(*vm->instances));
+	if (!instances) {
+		return 0;
+	}
+
+	void* instance_ids = nb_array_grow(vm->instance_ids, &vm->instance_id_capacity, vm->instance_count + 1, sizeof(*vm->instance_ids));
+	if (!instance_ids) {
+		return 0;
+	}
+
+	vm->instances = instances;
+	vm->instance_ids = instance_ids;
 
 	wrenEnsureSlots(vm->vm, 3);
 	wrenGetVariable(vm->vm, module, class_name, 0);

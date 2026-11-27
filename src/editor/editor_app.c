@@ -159,6 +159,7 @@ static void editor_app_shutdown(engine_t* engine, void* context) {
 	if (!app) { return; }
 	if (engine) { engine->scene_graph = NULL; }
 	scene_shutdown(&app->scene);
+	draw_list_free(&app->draw_list);
 	free(app);
 }
 
@@ -186,7 +187,6 @@ nb_result_t editor_app_open_scene(engine_t* engine, const char* path) {
 	}
 	else {
 		engine->script_vm_ready = 1;
-		wren_vm_bind_scene(&engine->script_vm, &app->scene);
 	}
 
 	snprintf(engine->scene_doc.path, sizeof(engine->scene_doc.path), "%s", path);

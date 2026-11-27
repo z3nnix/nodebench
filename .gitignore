@@ -1,3 +1,4 @@
 build/*
 *.ignore
+*.meta
 __pycache__/

@@ -14,7 +14,9 @@
 #include <unistd.h>
 
 #include "editor/editor.h"
+#include "asset/asset_db.h"
 #include "audio/audio.h"
+#include "core/dynamic_array.h"
 #include "core/engine.h"
 #include "editor/editor_app.h"
 #include "render/color.h"
@@ -497,6 +499,58 @@ static void editor_snapshot_free(editor_snapshot_t* s) {
 	s->selected_entity = NB_ENTITY_INVALID;
 }
 
+static int editor_snapshot_push(editor_snapshot_t** items, int* count, int* capacity, editor_snapshot_t snap) {
+	void* grown = nb_array_grow(*items, capacity, *count + 1, sizeof(**items));
+	if (!grown) {
+		return 0;
+	}
+
+	*items = grown;
+	(*items)[(*count)++] = snap;
+
+	return 1;
+}
+
+static void editor_snapshot_drop_oldest(editor_snapshot_t** items, int* count) {
+	editor_snapshot_free(&(*items)[0]);
+	if (*count > 1) {
+		memmove(&(*items)[0], &(*items)[1], sizeof(**items) * (size_t)(*count - 1));
+	}
+	(*count)--;
+}
+
+static int editor_path_array_ensure(char (**items)[NB_EDITOR_FS_PATH_MAX], int* capacity, int needed) {
+	void* grown = nb_array_grow(*items, capacity, needed, NB_EDITOR_FS_PATH_MAX);
+	if (!grown) {
+		return 0;
+	}
+
+	*items = grown;
+
+	return 1;
+}
+
+static int editor_hierarchy_array_copy(unsigned char** dst, int* dst_count, int* dst_capacity, const unsigned char* src, int src_count) {
+	if (src_count <= 0) {
+		*dst_count = 0;
+		return 1;
+	}
+	if (!src) {
+		return 0;
+	}
+
+	void* grown = nb_array_grow(*dst, dst_capacity, src_count, sizeof(**dst));
+	if (!grown) {
+		return 0;
+	}
+
+	*dst = grown;
+	memcpy(*dst, src, (size_t)src_count);
+	*dst_count = src_count;
+
+	return 1;
+}
+
 static void editor_history_clear(editor_t* editor) {
 	if (!editor) { return; }
 	for (int i = 0; i < editor->undo_count; i++) { editor_snapshot_free(&editor->undo[i]); }
@@ -518,12 +572,13 @@ static void editor_history_push(editor_t* editor, engine_t* engine) {
 	if (!editor || !engine || editor->history_suspended) { return; }
 	editor_snapshot_t snap;
 	if (editor_snapshot_capture(editor, engine, &snap) != NB_RESULT_OK) { return; }
-	if (editor->undo_count >= NB_EDITOR_UNDO_MAX) {
-		editor_snapshot_free(&editor->undo[0]);
-		memmove(&editor->undo[0], &editor->undo[1], sizeof(editor_snapshot_t) * (size_t)(NB_EDITOR_UNDO_MAX - 1));
-		editor->undo_count = NB_EDITOR_UNDO_MAX - 1;
+	if (editor->undo_count >= NB_EDITOR_UNDO_LIMIT) {
+		editor_snapshot_drop_oldest(&editor->undo, &editor->undo_count);
 	}
-	editor->undo[editor->undo_count++] = snap;
+	if (!editor_snapshot_push(&editor->undo, &editor->undo_count, &editor->undo_capacity, snap)) {
+		editor_snapshot_free(&snap);
+		return;
+	}
 	for (int i = 0; i < editor->redo_count; i++) { editor_snapshot_free(&editor->redo[i]); }
 	editor->redo_count = 0;
 }
@@ -543,7 +598,10 @@ static void editor_hierarchy_reset_drag(editor_t* editor) {
 
 static void editor_hierarchy_clear_state(editor_t* editor) {
 	if (!editor) { return; }
-	memset(editor->hierarchy_expanded, 1, sizeof(editor->hierarchy_expanded));
+	if (editor->hierarchy_expanded && editor->hierarchy_expanded_capacity > 0) {
+		memset(editor->hierarchy_expanded, 1, (size_t)editor->hierarchy_expanded_capacity);
+	}
+	editor->hierarchy_expanded_count = 0;
 	editor->hierarchy_filter[0] = '\0';
 	editor->hierarchy_context_entity = NB_ENTITY_INVALID;
 	editor->rename_entity = NB_ENTITY_INVALID;
@@ -589,11 +647,19 @@ static nb_result_t editor_restore_snapshot(editor_t* editor, engine_t* engine, c
 	if (result != NB_RESULT_OK) { return result; }
 	if (engine->scene_graph) {
 		scene_shutdown(engine->scene_graph);
-		*engine->scene_graph = next_scene;
+		if (!scene_copy(engine->scene_graph, &next_scene)) {
+			scene_shutdown(&next_scene);
+			scene_doc_clear(&next_doc);
+			return NB_RESULT_ERROR_SCENE;
+		}
 	}
 	else {
+		scene_shutdown(&next_scene);
+		scene_doc_clear(&next_doc);
 		return NB_RESULT_ERROR_SCENE;
 	}
+	scene_shutdown(&next_scene);
+	scene_doc_clear(&engine->scene_doc);
 	engine->scene_doc = next_doc;
 	engine->scene_doc.dirty = 1;
 	editor->selected_entity = snap->selected_entity;
@@ -617,13 +683,12 @@ static void editor_undo(editor_t* editor, engine_t* engine) {
 		editor_set_status(editor, "undo failed");
 		return;
 	}
-	if (editor->redo_count < NB_EDITOR_UNDO_MAX) {
-		editor->redo[editor->redo_count++] = cur;
+	if (editor->redo_count >= NB_EDITOR_UNDO_LIMIT) {
+		editor_snapshot_drop_oldest(&editor->redo, &editor->redo_count);
 	}
-	else {
-		editor_snapshot_free(&editor->redo[0]);
-		memmove(&editor->redo[0], &editor->redo[1], sizeof(editor_snapshot_t) * (size_t)(NB_EDITOR_UNDO_MAX - 1));
-		editor->redo[NB_EDITOR_UNDO_MAX - 1] = cur;
+	if (!editor_snapshot_push(&editor->redo, &editor->redo_count, &editor->redo_capacity, cur)) {
+		editor_snapshot_free(&cur);
+		return;
 	}
 	editor_set_status(editor, "undo");
 }
@@ -642,13 +707,12 @@ static void editor_redo(editor_t* editor, engine_t* engine) {
 		editor_set_status(editor, "redo failed");
 		return;
 	}
-	if (editor->undo_count < NB_EDITOR_UNDO_MAX) {
-		editor->undo[editor->undo_count++] = cur;
+	if (editor->undo_count >= NB_EDITOR_UNDO_LIMIT) {
+		editor_snapshot_drop_oldest(&editor->undo, &editor->undo_count);
 	}
-	else {
-		editor_snapshot_free(&editor->undo[0]);
-		memmove(&editor->undo[0], &editor->undo[1], sizeof(editor_snapshot_t) * (size_t)(NB_EDITOR_UNDO_MAX - 1));
-		editor->undo[NB_EDITOR_UNDO_MAX - 1] = cur;
+	if (!editor_snapshot_push(&editor->undo, &editor->undo_count, &editor->undo_capacity, cur)) {
+		editor_snapshot_free(&cur);
+		return;
 	}
 	editor_set_status(editor, "redo");
 }
@@ -697,7 +761,7 @@ static void editor_tab_store(editor_t* editor, engine_t* engine, editor_scene_ta
 	tab->selected_entity = editor->selected_entity;
 	tab->hierarchy_scroll_x = editor->hierarchy_scroll_x;
 	tab->hierarchy_scroll_y = editor->hierarchy_scroll_y;
-	memcpy(tab->hierarchy_expanded, editor->hierarchy_expanded, sizeof(tab->hierarchy_expanded));
+	editor_hierarchy_array_copy(&tab->hierarchy_expanded, &tab->hierarchy_expanded_count, &tab->hierarchy_expanded_capacity, editor->hierarchy_expanded, editor->hierarchy_expanded_count);
 	tab->dirty = engine && engine->scene_doc.dirty ? 1 : 0;
 }
 
@@ -711,14 +775,13 @@ static void editor_tab_load(editor_t* editor, const editor_scene_tab_t* tab) {
 	editor_inspector_show_node(editor);
 	editor->hierarchy_scroll_x = tab->hierarchy_scroll_x;
 	editor->hierarchy_scroll_y = tab->hierarchy_scroll_y;
-	memcpy(editor->hierarchy_expanded, tab->hierarchy_expanded, sizeof(editor->hierarchy_expanded));
+	editor_hierarchy_array_copy(&editor->hierarchy_expanded, &editor->hierarchy_expanded_count, &editor->hierarchy_expanded_capacity, tab->hierarchy_expanded, tab->hierarchy_expanded_count);
 	snprintf(editor->scene_path, sizeof(editor->scene_path), "%.*s", (int)sizeof(editor->scene_path) - 1, tab->path);
 }
 
 static void editor_tab_init(editor_scene_tab_t* tab, const char* path, const editor_t* editor) {
 	if (!tab) { return; }
 	memset(tab, 0, sizeof(*tab));
-	memset(tab->hierarchy_expanded, 1, sizeof(tab->hierarchy_expanded));
 	snprintf(tab->path, sizeof(tab->path), "%s", path ? path : "");
 	editor_fs_basename(tab->path, tab->name, sizeof(tab->name));
 	if (editor) {
@@ -744,6 +807,17 @@ static int editor_tab_find(const editor_t* editor, const char* path) {
 	return -1;
 }
 
+static int editor_tab_ensure(editor_t* editor, int needed) {
+	void* tabs = nb_array_grow(editor->tabs, &editor->tab_capacity, needed, sizeof(*editor->tabs));
+	if (!tabs) {
+		return 0;
+	}
+
+	editor->tabs = tabs;
+
+	return 1;
+}
+
 static void editor_scene_state_reset(editor_t* editor) {
 	if (!editor) { return; }
 	editor_history_clear(editor);
@@ -761,7 +835,11 @@ static void editor_open_scene_now(editor_t* editor, engine_t* engine, const char
 	int existing = editor_tab_find(editor, path);
 	int index = existing;
 	if (index < 0) {
-		index = editor->tab_count < NB_EDITOR_SCENE_TABS_MAX ? editor->tab_count : editor->active_tab;
+		index = editor->tab_count;
+		if (!editor_tab_ensure(editor, index + 1)) {
+			editor_set_status(editor, "scene tab allocation failed");
+			return;
+		}
 	}
 	if (editor->tab_count > 0 && editor->active_tab >= 0 && editor->active_tab < editor->tab_count) {
 		editor_tab_store(editor, engine, &editor->tabs[editor->active_tab]);
@@ -904,6 +982,11 @@ static void editor_fs_join_into(char* out, size_t size, const char* dir, const c
 
 static void editor_explorer_refresh(editor_t* editor) {
 	if (!editor) { return; }
+
+	if (editor->engine && editor->engine->assets_ready) {
+		asset_db_refresh(&editor->engine->assets);
+	}
+
 	editor->explorer.file_count = editor_fs_list_dir(editor->explorer.current_dir, editor->explorer.files, NB_EDITOR_FS_MAX_ENTRIES, editor->explorer.show_hidden);
 	editor->explorer.files_scroll_x = 0;
 	editor->explorer.files_scroll_y = 0;
@@ -913,6 +996,9 @@ static void editor_explorer_history_reset(editor_t* editor) {
 	if (!editor) { return; }
 	editor->explorer.history_count = 0;
 	editor->explorer.history_index = 0;
+	if (!editor_path_array_ensure(&editor->explorer.history, &editor->explorer.history_capacity, 1)) {
+		return;
+	}
 	snprintf(editor->explorer.history[0], NB_EDITOR_FS_PATH_MAX, "%.*s", NB_EDITOR_FS_PATH_MAX - 1, editor->explorer.current_dir);
 	editor->explorer.history_count = 1;
 }
@@ -935,14 +1021,10 @@ static void editor_explorer_enter(editor_t* editor, const char* path) {
 			editor->explorer.history_index++;
 		}
 		else {
-			if (editor->explorer.history_index + 1 >= NB_EDITOR_EXPLORER_HISTORY_MAX) {
-				memmove(&editor->explorer.history[0], &editor->explorer.history[1],
-					sizeof(editor->explorer.history) - NB_EDITOR_FS_PATH_MAX);
-				editor->explorer.history_count = NB_EDITOR_EXPLORER_HISTORY_MAX - 1;
-				editor->explorer.history_index = editor->explorer.history_count - 1;
-			}
-			else {
-				editor->explorer.history_count = editor->explorer.history_index + 1;
+			editor->explorer.history_count = editor->explorer.history_index + 1;
+			if (!editor_path_array_ensure(&editor->explorer.history, &editor->explorer.history_capacity, editor->explorer.history_count + 1)) {
+				editor_set_status(editor, "history allocation failed");
+				return;
 			}
 			snprintf(editor->explorer.history[editor->explorer.history_count], NB_EDITOR_FS_PATH_MAX,
 				"%.*s", NB_EDITOR_FS_PATH_MAX - 1, path);
@@ -974,9 +1056,11 @@ static void editor_explorer_toggle_expanded(editor_t* editor, const char* path) 
 			return;
 		}
 	}
-	if (editor->explorer.expanded_count < NB_EDITOR_EXPLORER_TREE_MAX) {
-		snprintf(editor->explorer.expanded[editor->explorer.expanded_count++], NB_EDITOR_FS_PATH_MAX, "%.*s", NB_EDITOR_FS_PATH_MAX - 1, path);
+	if (!editor_path_array_ensure(&editor->explorer.expanded, &editor->explorer.expanded_capacity, editor->explorer.expanded_count + 1)) {
+		editor_set_status(editor, "tree allocation failed");
+		return;
 	}
+	snprintf(editor->explorer.expanded[editor->explorer.expanded_count++], NB_EDITOR_FS_PATH_MAX, "%.*s", NB_EDITOR_FS_PATH_MAX - 1, path);
 }
 
 static int editor_explorer_path_matches(const char* path, const char* prefix) {
@@ -1038,6 +1122,12 @@ static void editor_explorer_activate(editor_t* editor, engine_t* engine, const c
 	}
 	if (strcmp(editor_fs_ext(path), "clut") == 0 || strcmp(editor_fs_ext(path), "tres") == 0 || strcmp(editor_fs_ext(path), "wav") == 0) {
 		editor_inspector_open_resource(editor, engine, path);
+		return;
+	}
+	if (editor_fs_open_external_text(path)) {
+		char opened[256];
+		snprintf(opened, sizeof(opened), "opened in text editor: %s", path);
+		editor_set_status(editor, opened);
 		return;
 	}
 	char msg[256];
@@ -1376,8 +1466,25 @@ static int editor_explorer_matches(const editor_t* editor, const editor_fs_entry
 	return 1;
 }
 
+static int editor_explorer_tree_rows_ensure(editor_t* editor, int needed) {
+	void* paths = nb_array_grow(editor->explorer.tree_row_paths, &editor->explorer.tree_row_capacity, needed, NB_EDITOR_FS_PATH_MAX);
+	if (!paths) {
+		return 0;
+	}
+
+	editor->explorer.tree_row_paths = paths;
+	void* rects = nb_array_grow(editor->explorer.tree_row_rects, &editor->explorer.tree_row_capacity, needed, sizeof(*editor->explorer.tree_row_rects));
+	if (!rects) {
+		return 0;
+	}
+
+	editor->explorer.tree_row_rects = rects;
+
+	return 1;
+}
+
 static void editor_explorer_draw_tree_dir(editor_t* editor, engine_t* engine, struct nk_context* ctx, const char* path, const char* name, int depth, int tree_w, int* row_count) {
-	if (!editor || !engine || !ctx || !path || depth > 8 || *row_count >= NB_EDITOR_EXPLORER_TREE_ROWS_MAX) { return; }
+	if (!editor || !engine || !ctx || !path || depth > 8) { return; }
 	int is_dir = editor_fs_is_dir(path);
 	editor_fs_entry_t entries[128];
 	int count = is_dir ? editor_fs_list_dir(path, entries, 128, editor->explorer.show_hidden) : 0;
@@ -1452,7 +1559,7 @@ static void editor_explorer_draw_tree_dir(editor_t* editor, engine_t* engine, st
 		editor->explorer.context_empty = 0;
 	}
 	if (hovered) { nk_tooltip(ctx, path); }
-	if (*row_count < NB_EDITOR_EXPLORER_TREE_ROWS_MAX) {
+	if (editor_explorer_tree_rows_ensure(editor, *row_count + 1)) {
 		snprintf(editor->explorer.tree_row_paths[*row_count], NB_EDITOR_FS_PATH_MAX, "%.*s", NB_EDITOR_FS_PATH_MAX - 1, path);
 		editor->explorer.tree_row_rects[*row_count][0] = row.x;
 		editor->explorer.tree_row_rects[*row_count][1] = row.y;
@@ -2092,6 +2199,9 @@ int editor_init(editor_t* editor, engine_t* engine) {
 	editor->inspector_editing = 0;
 	editor->has_pre_edit = 0;
 	memset(&editor->pre_edit, 0, sizeof(editor->pre_edit));
+	if (!editor_tab_ensure(editor, 1)) {
+		return 0;
+	}
 	editor_tab_init(&editor->tabs[0], editor->scene_path, editor);
 	editor->tab_count = 1;
 	editor->active_tab = 0;
@@ -2248,8 +2358,40 @@ void editor_shutdown(editor_t* editor, engine_t* engine) {
 		}
 		if (editor->has_pre_edit) { editor_snapshot_free(&editor->pre_edit); editor->has_pre_edit = 0; }
 		editor_history_clear(editor);
+		nb_array_free(editor->undo);
+		nb_array_free(editor->redo);
 		nk_sdl_shutdown();
 	}
+	for (int i = 0; i < editor->tab_count; i++) {
+		nb_array_free(editor->tabs[i].hierarchy_expanded);
+	}
+	nb_array_free(editor->tabs);
+	nb_array_free(editor->hierarchy_expanded);
+	nb_array_free(editor->explorer.expanded);
+	nb_array_free(editor->explorer.history);
+	nb_array_free(editor->explorer.tree_row_paths);
+	nb_array_free(editor->explorer.tree_row_rects);
+	editor->undo = NULL;
+	editor->redo = NULL;
+	editor->tabs = NULL;
+	editor->tab_count = 0;
+	editor->active_tab = -1;
+	editor->hierarchy_expanded = NULL;
+	editor->explorer.expanded = NULL;
+	editor->explorer.history = NULL;
+	editor->explorer.tree_row_paths = NULL;
+	editor->explorer.tree_row_rects = NULL;
+	editor->undo_capacity = 0;
+	editor->redo_capacity = 0;
+	editor->tab_capacity = 0;
+	editor->hierarchy_expanded_count = 0;
+	editor->hierarchy_expanded_capacity = 0;
+	editor->explorer.expanded_count = 0;
+	editor->explorer.expanded_capacity = 0;
+	editor->explorer.history_count = 0;
+	editor->explorer.history_capacity = 0;
+	editor->explorer.tree_row_count = 0;
+	editor->explorer.tree_row_capacity = 0;
 	editor->nk_ctx = NULL;
 	editor->ready = 0;
 	editor->enabled = 0;
@@ -2573,7 +2715,7 @@ typedef struct {
 } editor_hierarchy_row_t;
 
 typedef struct {
-	editor_hierarchy_row_t rows[NB_SCENE_MAX_ENTITIES];
+	editor_hierarchy_row_t rows[NB_SCENE_UI_ROW_CAPACITY];
 	int count;
 } editor_hierarchy_rows_t;
 
@@ -2583,8 +2725,21 @@ static float editor_hierarchy_row_height(struct nk_context* ctx) {
 }
 
 static unsigned char* editor_hierarchy_state_ptr(editor_t* editor, unsigned int id) {
-	if (!editor || id == NB_ENTITY_INVALID || id > NB_SCENE_MAX_ENTITIES) { return NULL; }
-	return &editor->hierarchy_expanded[id - 1];
+	if (!editor || id == NB_ENTITY_INVALID || id > (unsigned int)NB_ARRAY_MAX_CAPACITY) { return NULL; }
+
+	int needed = (int)id;
+	void* grown = nb_array_grow(editor->hierarchy_expanded, &editor->hierarchy_expanded_capacity, needed, sizeof(*editor->hierarchy_expanded));
+	if (!grown) {
+		return NULL;
+	}
+
+	editor->hierarchy_expanded = grown;
+	if (needed > editor->hierarchy_expanded_count) {
+		memset(editor->hierarchy_expanded + editor->hierarchy_expanded_count, 1, (size_t)(needed - editor->hierarchy_expanded_count));
+		editor->hierarchy_expanded_count = needed;
+	}
+
+	return &editor->hierarchy_expanded[needed - 1];
 }
 
 static char editor_hierarchy_lower(char c) {
@@ -2636,7 +2791,7 @@ static void editor_hierarchy_make_label(const node_t* node, int depth, int manua
 
 static void editor_hierarchy_store_row(editor_hierarchy_rows_t* rows, struct nk_context* ctx, unsigned int id, float row_h) {
 	if (!rows || !ctx || !ctx->current || !ctx->current->layout) { return; }
-	if (rows->count >= NB_SCENE_MAX_ENTITIES) { return; }
+	if (rows->count >= NB_SCENE_UI_ROW_CAPACITY) { return; }
 	struct nk_panel* layout = ctx->current->layout;
 	struct nk_rect rect = nk_rect(layout->bounds.x, layout->at_y - (float)*layout->offset_y, layout->bounds.w, row_h - ctx->style.window.spacing.y);
 	if (rect.h < 4.0f) { rect.h = row_h; }
@@ -2854,7 +3009,7 @@ static int editor_hierarchy_draw_rename_row(editor_t* editor, engine_t* engine, 
 static int editor_node_is_descendant(scene_t* scene, unsigned int ancestor, unsigned int id) {
 	if (!scene || ancestor == NB_ENTITY_INVALID || id == NB_ENTITY_INVALID || ancestor == id) { return 0; }
 	node_t* node = scene_get_node(scene, id);
-	for (int depth = 0; node && depth < NB_SCENE_MAX_ENTITIES; depth++) {
+	for (int depth = 0; node && depth < NB_SCENE_UI_ROW_CAPACITY; depth++) {
 		if (node->parent == ancestor) { return 1; }
 		node = scene_get_node(scene, node->parent);
 	}
@@ -3005,10 +3160,10 @@ static void editor_draw_hierarchy_node(editor_t* editor, engine_t* engine, scene
 
 static void editor_node_path(editor_t* editor, engine_t* engine, unsigned int id, char* out, size_t size) {
 	if (!editor || !engine || !engine->scene_graph || !out || size < 2) { return; }
-	const char* names[NB_SCENE_MAX_ENTITIES];
+	const char* names[NB_SCENE_UI_ROW_CAPACITY];
 	int count = 0;
 	node_t* node = scene_get_node(engine->scene_graph, id);
-	while (node && count < NB_SCENE_MAX_ENTITIES) {
+	while (node && count < NB_SCENE_UI_ROW_CAPACITY) {
 		names[count++] = node->name;
 		node = scene_get_node(engine->scene_graph, node->parent);
 	}
@@ -3490,6 +3645,16 @@ static void editor_inspector_draw_wav(editor_t* editor, engine_t* engine, struct
 	}
 }
 
+static void editor_inspector_capture_pre_edit(editor_t* editor, engine_t* engine) {
+	if (editor->inspector_editing || editor->has_pre_edit) { return; }
+	editor_snapshot_t snap;
+	if (editor_snapshot_capture(editor, engine, &snap) != NB_RESULT_OK) { return; }
+	if (editor->has_pre_edit) { editor_snapshot_free(&editor->pre_edit); }
+	editor->pre_edit = snap;
+	editor->has_pre_edit = 1;
+	editor->inspector_editing = 1;
+}
+
 static void editor_draw_inspector(editor_t* editor, engine_t* engine, int win_w, int win_h) {
 	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
 	int panel_w = 340;
@@ -3565,39 +3730,59 @@ static void editor_draw_inspector(editor_t* editor, engine_t* engine, int win_w,
 			nk_property_float(ctx, "Scale Y", 0.001f, &node->transform.scale.y, 1000.0f, 0.01f, 0.01f);
 			nk_property_float(ctx, "Scale Z", 0.001f, &node->transform.scale.z, 1000.0f, 0.01f, 0.01f);
 			if (memcmp(&before_t, &node->transform, sizeof(transform_t)) != 0) {
-				if (!editor->inspector_editing) {
-					editor_snapshot_t snap;
-					if (editor_snapshot_capture(editor, engine, &snap) == NB_RESULT_OK) {
-						if (editor->has_pre_edit) { editor_snapshot_free(&editor->pre_edit); }
-						editor->pre_edit = snap;
-						editor->has_pre_edit = 1;
-					}
-					editor->inspector_editing = 1;
+				if (!editor->inspector_editing && !editor->has_pre_edit) {
+					transform_t after_t = node->transform;
+					node->transform = before_t;
+					editor_inspector_capture_pre_edit(editor, engine);
+					node->transform = after_t;
 				}
 				engine->scene_doc.dirty = 1;
 			}
 		}
 
 		if (node->components & NB_NODE_COMPONENT_CAMERA) {
+			camera_t before_camera = node->camera;
 			nk_label(ctx, "Camera", NK_TEXT_LEFT);
 			nk_property_float(ctx, "FOV", 1.0f, &node->camera.fov, 179.0f, 0.1f, 0.1f);
 			nk_property_float(ctx, "Near", 0.001f, &node->camera.near_plane, node->camera.far_plane - 0.001f, 0.01f, 0.01f);
 			nk_property_float(ctx, "Far", node->camera.near_plane + 0.001f, &node->camera.far_plane, 10000.0f, 0.1f, 0.1f);
+			if (memcmp(&before_camera, &node->camera, sizeof(camera_t)) != 0) {
+				if (!editor->inspector_editing && !editor->has_pre_edit) {
+					camera_t after_camera = node->camera;
+					node->camera = before_camera;
+					editor_inspector_capture_pre_edit(editor, engine);
+					node->camera = after_camera;
+				}
+				engine->scene_doc.dirty = 1;
+			}
 			if (nk_button_label(ctx, "Set Active Camera")) {
+				editor_history_push(editor, engine);
 				scene_set_active_camera(engine->scene_graph, node->id);
+				engine->scene_doc.dirty = 1;
 				editor_set_status(editor, "active camera updated");
 			}
 		}
 
 		if (node->components & NB_NODE_COMPONENT_LIGHT) {
+			light_t before_light = node->light;
 			nk_label(ctx, "Light", NK_TEXT_LEFT);
 			nk_property_float(ctx, "Dir X", -1.0f, &node->light.direction.x, 1.0f, 0.01f, 0.01f);
 			nk_property_float(ctx, "Dir Y", -1.0f, &node->light.direction.y, 1.0f, 0.01f, 0.01f);
 			nk_property_float(ctx, "Dir Z", -1.0f, &node->light.direction.z, 1.0f, 0.01f, 0.01f);
 			nk_property_float(ctx, "Intensity", 0.0f, &node->light.intensity, 10.0f, 0.01f, 0.01f);
+			if (memcmp(&before_light, &node->light, sizeof(light_t)) != 0) {
+				if (!editor->inspector_editing && !editor->has_pre_edit) {
+					light_t after_light = node->light;
+					node->light = before_light;
+					editor_inspector_capture_pre_edit(editor, engine);
+					node->light = after_light;
+				}
+				engine->scene_doc.dirty = 1;
+			}
 		}
 
 		if (node->components & NB_NODE_COMPONENT_COLLIDER) {
+			collider_t before_collider = node->collider;
 			nk_label(ctx, "Collider", NK_TEXT_LEFT);
 			nk_labelf(ctx, NK_TEXT_LEFT, "shape: %s", node->collider.shape == NB_COLLIDER_SPHERE ? "sphere" : "aabb");
 			if (node->collider.shape == NB_COLLIDER_SPHERE) {
@@ -3607,6 +3792,15 @@ static void editor_draw_inspector(editor_t* editor, engine_t* engine, int win_w,
 				nk_property_float(ctx, "Ext X", 0.001f, &node->collider.extents.x, 1000.0f, 0.01f, 0.01f);
 				nk_property_float(ctx, "Ext Y", 0.001f, &node->collider.extents.y, 1000.0f, 0.01f, 0.01f);
 				nk_property_float(ctx, "Ext Z", 0.001f, &node->collider.extents.z, 1000.0f, 0.01f, 0.01f);
+			}
+			if (memcmp(&before_collider, &node->collider, sizeof(collider_t)) != 0) {
+				if (!editor->inspector_editing && !editor->has_pre_edit) {
+					collider_t after_collider = node->collider;
+					node->collider = before_collider;
+					editor_inspector_capture_pre_edit(editor, engine);
+					node->collider = after_collider;
+				}
+				engine->scene_doc.dirty = 1;
 			}
 		}
 
@@ -3783,7 +3977,7 @@ static void editor_draw_scene_tabs(editor_t* editor, engine_t* engine, int win_w
 	int x = 360;
 	int w = win_w - 720;
 	if (w < 160) { w = 160; }
-	int show_add = editor->tab_count < NB_EDITOR_SCENE_TABS_MAX;
+	int show_add = 1;
 	int columns = editor->tab_count * 2 + (show_add ? 1 : 0);
 	if (columns <= 0) { return; }
 	if (nk_begin(ctx, "SceneTabs", nk_rect((float)x, 10.0f, (float)w, 28.0f), NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
@@ -3812,7 +4006,10 @@ static void editor_draw_scene_tabs(editor_t* editor, engine_t* engine, int win_w
 				editor->dialog_kind = NB_EDITOR_DIALOG_NEW_SCENE;
 				editor->dialog_target = 0;
 				snprintf(editor->dialog_title, sizeof(editor->dialog_title), "New Scene");
-				snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", "examples/kula/scenes/new_scene.tscn");
+				int prefix = (int)sizeof(editor->dialog_path) - (int)strlen("/new_scene.tscn") - 1;
+				if (prefix > 0) {
+					snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%.*s/new_scene.tscn", prefix, editor->explorer.root);
+				}
 				snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Create and open a new scene");
 			}
 		}
@@ -3832,7 +4029,7 @@ static void editor_create_scene_from_dialog(editor_t* editor, engine_t* engine) 
 		editor_set_status(editor, "new scene failed: path exists");
 		return;
 	}
-	const char* content = "[gd_scene load_steps=1 format=2]\n\n[node name=\"Root\" type=\"Node\"]\n";
+	const char* content = "[gd_scene load_steps=1 format=3]\n\n[node name=\"Root\" type=\"Node\"]\n";
 	if (!editor_fs_write_text(path, content, strlen(content))) {
 		editor_set_status(editor, "new scene failed: write error");
 		return;
@@ -3868,12 +4065,20 @@ static void editor_open_project_now(editor_t* editor, engine_t* engine, const ch
 	engine->config.editor_enabled = 1;
 	snprintf(engine->config.mode, sizeof(engine->config.mode), "editor");
 	snprintf(engine->config.project_root, sizeof(engine->config.project_root), "%.*s", (int)sizeof(engine->config.project_root) - 1, abs);
+	asset_db_shutdown(&engine->assets);
+	engine->assets_ready = asset_db_init(&engine->assets, abs) ? 1 : 0;
+	if (!engine->assets_ready) {
+		editor_set_status(editor, "asset database unavailable");
+	}
 	editor->tab_count = 0;
 	editor->active_tab = -1;
 	snprintf(editor->scene_path, sizeof(editor->scene_path), "%s", engine->config.scene_path);
 	snprintf(editor->explorer.root, sizeof(editor->explorer.root), "%.*s", (int)sizeof(editor->explorer.root) - 1, abs);
 	snprintf(editor->explorer.current_dir, sizeof(editor->explorer.current_dir), "%s", editor->explorer.root);
 	editor_explorer_history_reset(editor);
+	if (editor->explorer.expanded && editor->explorer.expanded_capacity > 0) {
+		memset(editor->explorer.expanded, 0, (size_t)editor->explorer.expanded_capacity * NB_EDITOR_FS_PATH_MAX);
+	}
 	editor->explorer.expanded_count = 0;
 	editor->explorer.selected_path[0] = '\0';
 	editor->explorer.context_path[0] = '\0';
@@ -3947,7 +4152,7 @@ static void editor_create_project_from_dialog(editor_t* editor, engine_t* engine
 		engine->config.light_color[0], engine->config.light_color[1], engine->config.light_color[2],
 		engine->config.texture_vram_limit, engine->config.wireframe_enabled, engine->config.xray_enabled,
 		engine->config.hud_enabled, engine->config.hud_debug_enabled, name);
-	const char* scene_data = "[gd_scene load_steps=1 format=2]\n\n[node name=\"Root\" type=\"Node\"]\n";
+	const char* scene_data = "[gd_scene load_steps=1 format=3]\n\n[node name=\"Root\" type=\"Node\"]\n";
 	if (!editor_fs_write_text(marker, content, strlen(content)) || !editor_fs_write_text(scene, scene_data, strlen(scene_data))) {
 		editor_set_status(editor, "new project failed: write error");
 		return;
@@ -4151,12 +4356,12 @@ void editor_update(editor_t* editor, engine_t* engine) {
 
 	if (editor->inspector_editing && !nk_item_is_any_active(ctx)) {
 		if (editor->has_pre_edit) {
-			if (editor->undo_count >= NB_EDITOR_UNDO_MAX) {
-				editor_snapshot_free(&editor->undo[0]);
-				memmove(&editor->undo[0], &editor->undo[1], sizeof(editor_snapshot_t) * (size_t)(NB_EDITOR_UNDO_MAX - 1));
-				editor->undo_count = NB_EDITOR_UNDO_MAX - 1;
+			if (editor->undo_count >= NB_EDITOR_UNDO_LIMIT) {
+				editor_snapshot_drop_oldest(&editor->undo, &editor->undo_count);
 			}
-			editor->undo[editor->undo_count++] = editor->pre_edit;
+			if (!editor_snapshot_push(&editor->undo, &editor->undo_count, &editor->undo_capacity, editor->pre_edit)) {
+				editor_snapshot_free(&editor->pre_edit);
+			}
 			editor->has_pre_edit = 0;
 			memset(&editor->pre_edit, 0, sizeof(editor->pre_edit));
 			for (int i = 0; i < editor->redo_count; i++) { editor_snapshot_free(&editor->redo[i]); }

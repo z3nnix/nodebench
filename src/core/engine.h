@@ -1,6 +1,7 @@
 #ifndef NB_CORE_ENGINE_H
 #define NB_CORE_ENGINE_H
 
+#include "asset/asset_db.h"
 #include "audio/audio.h"
 #include "core/config.h"
 #include "core/input.h"
@@ -45,6 +46,7 @@ typedef struct {
 
 typedef struct engine_t {
 	render_config_t config;
+	asset_db_t assets;
 	platform_t platform;
 	framebuffer_t framebuffer;
 	renderer_t renderer;
@@ -61,6 +63,7 @@ typedef struct engine_t {
 	hud_t hud;
 	editor_t editor;
 	log_t log;
+	int assets_ready;
 	int script_vm_ready;
 	int audio_ready;
 	int paused;

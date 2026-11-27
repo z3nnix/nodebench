@@ -7,11 +7,12 @@
 #include "render/texture.h"
 #include "resource/resource_id.h"
 
-#define NB_RESOURCE_MAX_MESHES 64
-#define NB_RESOURCE_MAX_TEXTURES 64
-#define NB_RESOURCE_MAX_MATERIALS 64
-#define NB_RESOURCE_MAX_SCRIPTS 64
-#define NB_RESOURCE_MAX_AUDIO 32
+#define NB_RESOURCE_MAX_SLOTS 65535
+#define NB_RESOURCE_INITIAL_MESHES 8
+#define NB_RESOURCE_INITIAL_TEXTURES 8
+#define NB_RESOURCE_INITIAL_MATERIALS 8
+#define NB_RESOURCE_INITIAL_SCRIPTS 8
+#define NB_RESOURCE_INITIAL_AUDIO 8
 
 typedef struct {
 	uint32_t generation;
@@ -40,11 +41,26 @@ typedef struct {
 } audio_slot_t;
 
 typedef struct resource_store_t {
-	mesh_slot_t meshes[NB_RESOURCE_MAX_MESHES];
-	texture_slot_t textures[NB_RESOURCE_MAX_TEXTURES];
-	material_slot_t materials[NB_RESOURCE_MAX_MATERIALS];
-	script_slot_t scripts[NB_RESOURCE_MAX_SCRIPTS];
-	audio_slot_t audio[NB_RESOURCE_MAX_AUDIO];
+	mesh_slot_t* meshes;
+	int mesh_count;
+	int mesh_capacity;
+
+	texture_slot_t* textures;
+	int texture_count;
+	int texture_capacity;
+
+	material_slot_t* materials;
+	int material_count;
+	int material_capacity;
+
+	script_slot_t* scripts;
+	int script_count;
+	int script_capacity;
+
+	audio_slot_t* audio;
+	int audio_count;
+	int audio_capacity;
+
 	int vram_limit;
 	int vram_used;
 } resource_store_t;

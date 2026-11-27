@@ -18,12 +18,25 @@ EDITOR_FS_TEST_TARGET := $(BUILD_DIR)/test_editor_fs
 EDITOR_FS_TEST_OBJ := $(BUILD_DIR)/test/test_editor_fs.o $(BUILD_DIR)/editor/editor_fs.o
 CONFIG_ROOT_TEST_TARGET := $(BUILD_DIR)/test_config_root
 CONFIG_ROOT_TEST_OBJ := $(BUILD_DIR)/test/test_config_root.o $(BUILD_DIR)/core/config.o
+SCENE_DOC_TEST_TARGET := $(BUILD_DIR)/test_scene_doc
+SCENE_DOC_TEST_OBJ := $(BUILD_DIR)/test/test_scene_doc.o
+SCENE_DOC_TEST_LIB_OBJ := $(filter-out $(BUILD_DIR)/main.o,$(OBJ))
+DYNAMIC_ARRAY_OBJ := $(BUILD_DIR)/core/dynamic_array.o
+EDITOR_LIFECYCLE_TEST_TARGET := $(BUILD_DIR)/test_editor_lifecycle
+EDITOR_LIFECYCLE_TEST_OBJ := $(BUILD_DIR)/test/test_editor_lifecycle.o
+EDITOR_LIFECYCLE_TEST_LIB_OBJ := $(filter-out $(BUILD_DIR)/main.o,$(OBJ))
+ASSET_DB_TEST_TARGET := $(BUILD_DIR)/test_asset_db
+ASSET_DB_TEST_OBJ := $(BUILD_DIR)/test/test_asset_db.o
+ASSET_DB_TEST_LIB_OBJ := $(DYNAMIC_ARRAY_OBJ) $(BUILD_DIR)/asset/asset_db.o
+DYNAMIC_TEST_TARGET := $(BUILD_DIR)/test_dynamic
+DYNAMIC_TEST_OBJ := $(BUILD_DIR)/test/test_dynamic.o
+DYNAMIC_TEST_LIB_OBJ := $(filter-out $(BUILD_DIR)/main.o,$(OBJ))
 TEST_OUTPUT := $(BUILD_DIR)/test_frame.ppm
-TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/core/config.o $(BUILD_DIR)/render/color.o $(BUILD_DIR)/render/texture.o $(BUILD_DIR)/render/mesh.o $(BUILD_DIR)/render/material.o $(BUILD_DIR)/render/draw_list.o $(BUILD_DIR)/render/framebuffer.o $(BUILD_DIR)/render/renderer.o
-SCENE_TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/scene/scene.o
-WREN_TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/core/log.o $(BUILD_DIR)/core/platform.o $(BUILD_DIR)/scene/scene.o $(BUILD_DIR)/physics/collision.o $(BUILD_DIR)/script/script.o $(BUILD_DIR)/script/wren_vm.o $(BUILD_DIR)/third_party/wren/wren.o $(BUILD_DIR)/resource/resource.o $(BUILD_DIR)/audio/audio.o $(BUILD_DIR)/audio/wav.o
-COLLISION_TEST_LIB_OBJ := $(BUILD_DIR)/core/math.o $(BUILD_DIR)/scene/scene.o $(BUILD_DIR)/physics/collision.o
-AUDIO_TEST_LIB_OBJ := $(BUILD_DIR)/audio/audio.o $(BUILD_DIR)/audio/wav.o $(BUILD_DIR)/resource/resource.o
+TEST_LIB_OBJ := $(DYNAMIC_ARRAY_OBJ) $(BUILD_DIR)/core/math.o $(BUILD_DIR)/core/config.o $(BUILD_DIR)/render/color.o $(BUILD_DIR)/render/texture.o $(BUILD_DIR)/render/mesh.o $(BUILD_DIR)/render/material.o $(BUILD_DIR)/render/draw_list.o $(BUILD_DIR)/render/framebuffer.o $(BUILD_DIR)/render/renderer.o
+SCENE_TEST_LIB_OBJ := $(DYNAMIC_ARRAY_OBJ) $(BUILD_DIR)/core/math.o $(BUILD_DIR)/scene/scene.o
+WREN_TEST_LIB_OBJ := $(DYNAMIC_ARRAY_OBJ) $(BUILD_DIR)/core/math.o $(BUILD_DIR)/core/log.o $(BUILD_DIR)/core/platform.o $(BUILD_DIR)/scene/scene.o $(BUILD_DIR)/physics/collision.o $(BUILD_DIR)/script/script.o $(BUILD_DIR)/script/wren_vm.o $(BUILD_DIR)/third_party/wren/wren.o $(BUILD_DIR)/resource/resource.o $(BUILD_DIR)/audio/audio.o $(BUILD_DIR)/audio/wav.o
+COLLISION_TEST_LIB_OBJ := $(DYNAMIC_ARRAY_OBJ) $(BUILD_DIR)/core/math.o $(BUILD_DIR)/scene/scene.o $(BUILD_DIR)/physics/collision.o
+AUDIO_TEST_LIB_OBJ := $(DYNAMIC_ARRAY_OBJ) $(BUILD_DIR)/audio/audio.o $(BUILD_DIR)/audio/wav.o $(BUILD_DIR)/resource/resource.o
 
 .PHONY: all run test assets smoke clean
 
@@ -53,6 +66,18 @@ $(EDITOR_FS_TEST_TARGET): $(EDITOR_FS_TEST_OBJ)
 $(CONFIG_ROOT_TEST_TARGET): $(CONFIG_ROOT_TEST_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+$(SCENE_DOC_TEST_TARGET): $(SCENE_DOC_TEST_OBJ) $(SCENE_DOC_TEST_LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(ASSET_DB_TEST_TARGET): $(ASSET_DB_TEST_OBJ) $(ASSET_DB_TEST_LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(EDITOR_LIFECYCLE_TEST_TARGET): $(EDITOR_LIFECYCLE_TEST_OBJ) $(EDITOR_LIFECYCLE_TEST_LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(DYNAMIC_TEST_TARGET): $(DYNAMIC_TEST_OBJ) $(DYNAMIC_TEST_LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
 $(BUILD_DIR)/%.o: src/%.c
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -64,19 +89,20 @@ $(BUILD_DIR)/third_party/%.o: third_party/%.c
 run: all
 	./$(TARGET)
 
-assets:
-	python3 scripts/gen_kula_assets.py
-
 smoke: all
 	SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 20s ./$(TARGET) --max_frames=60
 
-test: $(TEST_TARGET) $(SCENE_TEST_TARGET) $(WREN_TEST_TARGET) $(COLLISION_TEST_TARGET) $(AUDIO_TEST_TARGET) $(EDITOR_FS_TEST_TARGET) $(CONFIG_ROOT_TEST_TARGET)
+test: $(TEST_TARGET) $(SCENE_TEST_TARGET) $(WREN_TEST_TARGET) $(COLLISION_TEST_TARGET) $(AUDIO_TEST_TARGET) $(EDITOR_FS_TEST_TARGET) $(CONFIG_ROOT_TEST_TARGET) $(SCENE_DOC_TEST_TARGET) $(ASSET_DB_TEST_TARGET) $(EDITOR_LIFECYCLE_TEST_TARGET) $(DYNAMIC_TEST_TARGET)
+	./$(ASSET_DB_TEST_TARGET)
+	./$(EDITOR_LIFECYCLE_TEST_TARGET)
+	./$(SCENE_DOC_TEST_TARGET)
 	./$(SCENE_TEST_TARGET)
 	./$(EDITOR_FS_TEST_TARGET)
 	./$(CONFIG_ROOT_TEST_TARGET)
 	./$(WREN_TEST_TARGET)
 	./$(COLLISION_TEST_TARGET)
 	./$(AUDIO_TEST_TARGET)
+	./$(DYNAMIC_TEST_TARGET)
 	./$(TEST_TARGET) $(TEST_OUTPUT)
 	@read -r expected < tests/golden.sha256; \
 	actual=$$(sha256sum $(TEST_OUTPUT) | cut -d' ' -f1); \
@@ -93,3 +119,7 @@ clean:
 -include $(TEST_OBJ:.o=.d)
 -include $(EDITOR_FS_TEST_OBJ:.o=.d)
 -include $(CONFIG_ROOT_TEST_OBJ:.o=.d)
+-include $(SCENE_DOC_TEST_OBJ:.o=.d)
+-include $(ASSET_DB_TEST_OBJ:.o=.d)
+-include $(EDITOR_LIFECYCLE_TEST_OBJ:.o=.d)
+-include $(DYNAMIC_TEST_OBJ:.o=.d)

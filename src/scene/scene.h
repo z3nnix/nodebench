@@ -5,7 +5,8 @@
 #include "resource/resource.h"
 
 #define NB_ENTITY_INVALID 0
-#define NB_SCENE_MAX_ENTITIES 256
+#define NB_SCENE_UI_ROW_CAPACITY 256
+#define NB_SCENE_MAX_ENTITIES 65536
 #define NB_NODE_NAME_CAPACITY 64
 #define NB_NODE_MAX_CHILDREN 128
 
@@ -84,36 +85,49 @@ typedef struct {
 } node_t;
 
 typedef struct {
-	node_t nodes[NB_SCENE_MAX_ENTITIES];
+	node_t* nodes;
 	int node_count;
+	int node_capacity;
 
-	entity_id_t ids[NB_SCENE_MAX_ENTITIES];
+	entity_id_t* ids;
 	int entity_count;
+	int entity_capacity;
 
-	transform_t transforms[NB_SCENE_MAX_ENTITIES];
-	entity_id_t transform_entities[NB_SCENE_MAX_ENTITIES];
+	transform_t* transforms;
+	int transform_capacity;
+	entity_id_t* transform_entities;
+	int transform_entity_capacity;
 	int transform_count;
 
-	mesh_renderer_t mesh_renderers[NB_SCENE_MAX_ENTITIES];
-	entity_id_t mesh_renderer_entities[NB_SCENE_MAX_ENTITIES];
+	mesh_renderer_t* mesh_renderers;
+	int mesh_renderer_capacity;
+	entity_id_t* mesh_renderer_entities;
+	int mesh_renderer_entity_capacity;
 	int mesh_renderer_count;
 
-	camera_t cameras[NB_SCENE_MAX_ENTITIES];
-	entity_id_t camera_entities[NB_SCENE_MAX_ENTITIES];
+	camera_t* cameras;
+	int camera_capacity;
+	entity_id_t* camera_entities;
+	int camera_entity_capacity;
 	int camera_count;
 	entity_id_t active_camera;
 
-	light_t lights[NB_SCENE_MAX_ENTITIES];
-	entity_id_t light_entities[NB_SCENE_MAX_ENTITIES];
+	light_t* lights;
+	int light_capacity;
+	entity_id_t* light_entities;
+	int light_entity_capacity;
 	int light_count;
 
-	collider_t colliders[NB_SCENE_MAX_ENTITIES];
-	entity_id_t collider_entities[NB_SCENE_MAX_ENTITIES];
+	collider_t* colliders;
+	int collider_capacity;
+	entity_id_t* collider_entities;
+	int collider_entity_capacity;
 	int collider_count;
 } scene_t;
 
 void scene_init(scene_t* scene);
 void scene_shutdown(scene_t* scene);
+int scene_copy(scene_t* dst, const scene_t* src);
 entity_id_t scene_create_entity(scene_t* scene);
 node_t* scene_get_node(scene_t* scene, entity_id_t id);
 entity_id_t scene_find_node(scene_t* scene, const char* name);
@@ -126,7 +140,7 @@ int scene_set_node_visible(scene_t* scene, entity_id_t id, int visible);
 int scene_node_visible(scene_t* scene, entity_id_t id);
 int scene_set_node_tint(scene_t* scene, entity_id_t id, vec3_t tint);
 void scene_update_world_transforms(scene_t* scene);
-void scene_rebuild_cache(scene_t* scene);
+int scene_rebuild_cache(scene_t* scene);
 
 int scene_add_transform(scene_t* scene, entity_id_t id, transform_t transform);
 int scene_add_mesh_renderer(scene_t* scene, entity_id_t id, mesh_renderer_t renderer);

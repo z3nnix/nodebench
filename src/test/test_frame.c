@@ -94,6 +94,7 @@ int main(int argc, char** argv) {
 
 	uint32_t* output = (uint32_t*)malloc((size_t)config.width * (size_t)config.height * sizeof(uint32_t));
 	if (!output) {
+		draw_list_free(&list);
 		renderer_shutdown(&renderer);
 		framebuffer_shutdown(&framebuffer);
 		return 1;
@@ -103,6 +104,7 @@ int main(int argc, char** argv) {
 	int ok = write_ppm(&framebuffer, output, argv[1]);
 
 	free(output);
+	draw_list_free(&list);
 	renderer_shutdown(&renderer);
 	framebuffer_shutdown(&framebuffer);
 

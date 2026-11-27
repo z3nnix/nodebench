@@ -2,54 +2,27 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "core/dynamic_array.h"
 #include "render/renderer.h"
 
 static int renderer_reserve(renderer_t* renderer, int vertex_count, int triangle_count) {
 	if (!renderer) { return 0; }
-	if (vertex_count <= renderer->projected_capacity && triangle_count <= renderer->triangle_capacity) { return 1; }
 
-	int projected_capacity = renderer->projected_capacity;
-	int triangle_capacity = renderer->triangle_capacity;
-
-	if (vertex_count > projected_capacity) {
-		projected_capacity = projected_capacity > 0 ? projected_capacity : 64;
-		while (projected_capacity < vertex_count) { projected_capacity *= 2; }
-	}
-
-	if (triangle_count > triangle_capacity) {
-		triangle_capacity = triangle_capacity > 0 ? triangle_capacity : 64;
-		while (triangle_capacity < triangle_count) { triangle_capacity *= 2; }
-	}
-
-	projected_vertex_t* projected = renderer->projected;
-	vec3_t* world = renderer->world;
-	projected_triangle_t* triangles = renderer->triangles;
-
-	if (projected_capacity != renderer->projected_capacity) {
-		projected = (projected_vertex_t*)realloc(projected, (size_t)projected_capacity * sizeof(projected_vertex_t));
+	if (vertex_count > 0) {
+		projected_vertex_t* projected = nb_array_grow(renderer->projected, &renderer->projected_capacity, vertex_count, sizeof(*renderer->projected));
 		if (!projected) { return 0; }
+		renderer->projected = projected;
 
-		world = (vec3_t*)realloc(world, (size_t)projected_capacity * sizeof(vec3_t));
-		if (!world) {
-			if (projected != renderer->projected) { free(projected); }
-			return 0;
-		}
+		vec3_t* world = nb_array_grow(renderer->world, &renderer->world_capacity, vertex_count, sizeof(*renderer->world));
+		if (!world) { return 0; }
+		renderer->world = world;
 	}
 
-	if (triangle_capacity != renderer->triangle_capacity) {
-		triangles = (projected_triangle_t*)realloc(triangles, (size_t)triangle_capacity * sizeof(projected_triangle_t));
-		if (!triangles) {
-			if (projected != renderer->projected) { free(projected); }
-			if (world != renderer->world) { free(world); }
-			return 0;
-		}
+	if (triangle_count > 0) {
+		projected_triangle_t* triangles = nb_array_grow(renderer->triangles, &renderer->triangle_capacity, triangle_count, sizeof(*renderer->triangles));
+		if (!triangles) { return 0; }
+		renderer->triangles = triangles;
 	}
-
-	renderer->projected = projected;
-	renderer->world = world;
-	renderer->triangles = triangles;
-	renderer->projected_capacity = projected_capacity;
-	renderer->triangle_capacity = triangle_capacity;
 
 	return 1;
 }
@@ -181,8 +154,11 @@ int renderer_init(renderer_t* renderer, framebuffer_t* framebuffer) {
 	renderer->world = NULL;
 	renderer->triangles = NULL;
 	renderer->projected_capacity = 0;
+	renderer->world_capacity = 0;
 	renderer->triangle_capacity = 0;
+	renderer->commands = NULL;
 	renderer->command_count = 0;
+	renderer->command_capacity = 0;
 	renderer->draw_calls = 0;
 	renderer->drawn_triangles = 0;
 	renderer->culled_triangles = 0;
@@ -202,13 +178,17 @@ void renderer_shutdown(renderer_t* renderer) {
 	free(renderer->projected);
 	free(renderer->world);
 	free(renderer->triangles);
+	nb_array_free(renderer->commands);
 
 	renderer->projected = NULL;
 	renderer->world = NULL;
 	renderer->triangles = NULL;
+	renderer->commands = NULL;
 	renderer->projected_capacity = 0;
+	renderer->world_capacity = 0;
 	renderer->triangle_capacity = 0;
 	renderer->command_count = 0;
+	renderer->command_capacity = 0;
 	renderer->draw_calls = 0;
 	renderer->drawn_triangles = 0;
 	renderer->culled_triangles = 0;
@@ -220,13 +200,19 @@ void renderer_submit(renderer_t* renderer, const draw_list_t* list) {
 
 	renderer->view = list->view;
 	renderer->view_projection = list->view_projection;
-	renderer->command_count = list->count;
 
-	if (renderer->command_count > NB_DRAW_LIST_MAX_COMMANDS) {
-		renderer->command_count = NB_DRAW_LIST_MAX_COMMANDS;
+	if (list->count > 0) {
+		void* commands = nb_array_grow(renderer->commands, &renderer->command_capacity, list->count, sizeof(*renderer->commands));
+		if (!commands) {
+			renderer->command_count = 0;
+			return;
+		}
+
+		renderer->commands = commands;
+		memcpy(renderer->commands, list->commands, (size_t)list->count * sizeof(draw_command_t));
 	}
 
-	memcpy(renderer->commands, list->commands, (size_t)renderer->command_count * sizeof(draw_command_t));
+	renderer->command_count = list->count;
 }
 
 static void renderer_draw_command(renderer_t* renderer, const draw_command_t* command) {

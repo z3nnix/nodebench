@@ -59,6 +59,7 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 	if (result != NB_RESULT_OK) {
 		engine_log(engine, "failed to load %s: %s", engine->config.scene_path, nb_error_string(result));
 		scene_shutdown(&runtime->scene);
+		draw_list_free(&runtime->draw_list);
 		free(runtime);
 
 		return result;
@@ -77,6 +78,7 @@ static nb_result_t demo_scene_init(engine_t* engine, void** context) {
 		if (!source || !wren_vm_attach(&engine->script_vm, node->id, node->script_module, source)) {
 			engine_log(engine, "failed to attach script to node=%s", node->name);
 			scene_shutdown(&runtime->scene);
+			draw_list_free(&runtime->draw_list);
 			free(runtime);
 
 			return NB_RESULT_ERROR_SCENE;
@@ -228,6 +230,7 @@ static void demo_scene_shutdown(engine_t* engine, void* context) {
 	}
 
 	scene_shutdown(&runtime->scene);
+	draw_list_free(&runtime->draw_list);
 	free(runtime);
 }
 

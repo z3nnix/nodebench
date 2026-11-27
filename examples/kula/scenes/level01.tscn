@@ -1,32 +1,32 @@
 [gd_scene load_steps=21 format=3]
 
-[ext_resource type="Mesh" path="res://models/cube.obj" id="mesh_cube"]
-[ext_resource type="Mesh" path="res://models/ball.obj" id="mesh_ball"]
-[ext_resource type="Mesh" path="res://models/key.obj" id="mesh_key"]
-[ext_resource type="Mesh" path="res://models/coin.obj" id="mesh_coin"]
-[ext_resource type="Mesh" path="res://models/exit.obj" id="mesh_exit"]
-[ext_resource type="Mesh" path="res://models/spikes.obj" id="mesh_spikes"]
-[ext_resource type="NBPS1Material" path="res://assets/tile.tres" id="mat_tile"]
-[ext_resource type="NBPS1Material" path="res://assets/ball.tres" id="mat_ball"]
-[ext_resource type="NBPS1Material" path="res://assets/key.tres" id="mat_key"]
-[ext_resource type="NBPS1Material" path="res://assets/coin.tres" id="mat_coin"]
-[ext_resource type="NBPS1Material" path="res://assets/exit.tres" id="mat_exit"]
-[ext_resource type="NBPS1Material" path="res://assets/spikes.tres" id="mat_spikes"]
-[ext_resource type="WrenScript" path="res://scripts/util.wren" id="script_util"]
-[ext_resource type="WrenScript" path="res://scripts/player.wren" id="script_player"]
-[ext_resource type="WrenScript" path="res://scripts/game.wren" id="script_game"]
-[ext_resource type="AudioStreamWAV" path="res://assets/pickup.wav" id="audio_pickup"]
-[ext_resource type="AudioStreamWAV" path="res://assets/jump.wav" id="audio_jump"]
-[ext_resource type="AudioStreamWAV" path="res://assets/death.wav" id="audio_death"]
-[ext_resource type="AudioStreamWAV" path="res://assets/win.wav" id="audio_win"]
-[ext_resource type="AudioStreamWAV" path="res://assets/ambient.wav" id="audio_ambient"]
+[ext_resource type="Mesh" path="res://models/cube.obj" uuid="ad94feb3-c5f4-4723-bc09-becc3ac51add" id="mesh_cube"]
+[ext_resource type="Mesh" path="res://models/ball.obj" uuid="aeefbe84-77e1-404c-9d3c-27d0fabd7b03" id="mesh_ball"]
+[ext_resource type="Mesh" path="res://models/key.obj" uuid="0ff55b24-c558-48f7-8ff4-0e2bb5ce2f1b" id="mesh_key"]
+[ext_resource type="Mesh" path="res://models/coin.obj" uuid="83846df4-bf2a-4954-832f-1441999d8841" id="mesh_coin"]
+[ext_resource type="Mesh" path="res://models/exit.obj" uuid="74de7c2c-6509-438d-b36d-863c970e1c18" id="mesh_exit"]
+[ext_resource type="Mesh" path="res://models/spikes.obj" uuid="dd9af1d2-2dfc-438e-92e8-9ffe3671fc36" id="mesh_spikes"]
+[ext_resource type="NBPS1Material" path="res://assets/tile.tres" uuid="f784b3fc-5c8a-4965-a86f-618a91a8fc8b" id="mat_tile"]
+[ext_resource type="NBPS1Material" path="res://assets/ball.tres" uuid="a379d534-123e-40e5-ba97-f04407da1a34" id="mat_ball"]
+[ext_resource type="NBPS1Material" path="res://assets/key.tres" uuid="56b8d119-ec6f-4320-94b1-a54e2ff2ff57" id="mat_key"]
+[ext_resource type="NBPS1Material" path="res://assets/coin.tres" uuid="49f915cc-a3a8-4dac-a226-5c62f0ccfa7e" id="mat_coin"]
+[ext_resource type="NBPS1Material" path="res://assets/exit.tres" uuid="48a3e079-5ff0-4401-8625-40ad501c1526" id="mat_exit"]
+[ext_resource type="NBPS1Material" path="res://assets/spikes.tres" uuid="761fcf73-684a-436f-b308-2f74bdf5a8cc" id="mat_spikes"]
+[ext_resource type="WrenScript" path="res://scripts/util.wren" uuid="bc1ace43-3f67-4113-9851-7dc08a01e362" id="script_util"]
+[ext_resource type="WrenScript" path="res://scripts/player.wren" uuid="b9e09c48-badc-482a-b189-ff705b08196a" id="script_player"]
+[ext_resource type="WrenScript" path="res://scripts/game.wren" uuid="26e97cf3-88e0-4c79-bbcd-f2852c812a47" id="script_game"]
+[ext_resource type="AudioStreamWAV" path="res://assets/pickup.wav" uuid="8f685380-7b61-4097-bd24-340e4808a6d6" id="audio_pickup"]
+[ext_resource type="AudioStreamWAV" path="res://assets/jump.wav" uuid="7cca9b25-8ab0-426e-80c6-1b9933343df8" id="audio_jump"]
+[ext_resource type="AudioStreamWAV" path="res://assets/death.wav" uuid="b4c465b6-0933-44b0-b333-3a81a387fb27" id="audio_death"]
+[ext_resource type="AudioStreamWAV" path="res://assets/win.wav" uuid="5bd88bb5-f976-4c66-b708-533435398249" id="audio_win"]
+[ext_resource type="AudioStreamWAV" path="res://assets/ambient.wav" uuid="747dc66a-b271-4892-bd10-020f7750978d" id="audio_ambient"]
 
 [node name="Level" type="Node3D" parent="."]
-script = ExtResource("mesh_key")
+script = ExtResource("script_game")
 
 [node name="Camera" type="Camera3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 3.800000, 3.800000)
-fov = 58.000000
+fov = 60.000000
 near = 0.050000
 far = 100.000000
 target = Vector3(0.000000, 0.500000, 0.000000)
@@ -39,311 +39,311 @@ intensity = 1.000000
 [node name="Player" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.200000, 0.750000, 1.000000)
 mesh = ExtResource("mesh_ball")
-material = ExtResource("mesh_ball")
-script = ExtResource("mesh_ball")
+material = ExtResource("mat_ball")
+script = ExtResource("script_player")
 
 [node name="T_0_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_1_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 1.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_2_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 2.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_3_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 3.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_4_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 4.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_5_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 5.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_6_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 6.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_7_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 7.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_8_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 8.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_9_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 9.000000, -0.500000, 0.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_0_1" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.500000, 1.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_9_1" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 9.000000, -0.500000, 1.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_0_2" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.500000, 2.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_2_2" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 2.000000, -0.500000, 2.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_3_2" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 3.000000, -0.500000, 2.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_4_2" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 4.000000, -0.500000, 2.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_5_2" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 5.000000, -0.500000, 2.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_9_2" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 9.000000, -0.500000, 2.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_0_3" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.500000, 3.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_5_3" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 5.000000, -0.500000, 3.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_9_3" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 9.000000, -0.500000, 3.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_0_4" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.500000, 4.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_5_4" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 5.000000, -0.500000, 4.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_9_4" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 9.000000, -0.500000, 4.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_0_5" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.500000, 5.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_8_5_exit" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 8.000000, -0.500000, 5.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_exit")
+material = ExtResource("mat_exit")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_9_5" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 9.000000, -0.500000, 5.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_0_6" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.500000, 6.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_9_6" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 9.000000, -0.500000, 6.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_0_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_1_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 1.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_2_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 2.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_3_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 3.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_4_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 4.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_5_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 5.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_6_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 6.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_7_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 7.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_8_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 8.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="T_9_7" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 9.000000, -0.500000, 7.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 
 [node name="K_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 2.000000, 0.350000, 1.000000)
 mesh = ExtResource("mesh_key")
-material = ExtResource("mesh_key")
+material = ExtResource("mat_key")
 
 [node name="K_1" type="MeshInstance3D" parent="Level"]
-transform = Transform3D(0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 5.000000, 0.350000, 3.000000)
+transform = Transform3D(0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 7.870000, 0.350000, 6.100000)
 mesh = ExtResource("mesh_key")
-material = ExtResource("mesh_key")
+material = ExtResource("mat_key")
 
 [node name="C_0" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 3.000000, 0.450000, 1.000000)
 mesh = ExtResource("mesh_coin")
-material = ExtResource("mesh_coin")
+material = ExtResource("mat_coin")
 
 [node name="C_1" type="MeshInstance3D" parent="Level"]
-transform = Transform3D(0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 5.000000, 0.450000, 5.000000)
+transform = Transform3D(0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 5.000000, 0.450000, 6.020000)
 mesh = ExtResource("mesh_coin")
-material = ExtResource("mesh_coin")
+material = ExtResource("mat_coin")
 
 [node name="C_2" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 0.000000, 0.000000, 0.000000, 0.800000, 0.000000, 0.450000, 6.000000)
 mesh = ExtResource("mesh_coin")
-material = ExtResource("mesh_coin")
+material = ExtResource("mat_coin")
 
 [node name="T_5_5_copy" type="MeshInstance3D" parent="Level"]
 transform = Transform3D(1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.000000, 0.000000, 0.000000, 1.000000, 5.000000, -0.500000, 5.000000)
 mesh = ExtResource("mesh_cube")
-material = ExtResource("mesh_cube")
+material = ExtResource("mat_tile")
 collider_shape = "aabb"
 collider_extents = Vector3(0.500000, 0.500000, 0.500000)
 

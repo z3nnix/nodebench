@@ -34,9 +34,11 @@ typedef struct {
 	projected_vertex_t* projected;
 	vec3_t* world;
 	projected_triangle_t* triangles;
-	draw_command_t commands[NB_DRAW_LIST_MAX_COMMANDS];
+	draw_command_t* commands;
 	int command_count;
+	int command_capacity;
 	int projected_capacity;
+	int world_capacity;
 	int triangle_capacity;
 	int draw_calls;
 	int drawn_triangles;

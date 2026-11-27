@@ -4,8 +4,6 @@
 #include "scene/scene.h"
 #include "third_party/wren/wren.h"
 
-#define NB_WREN_MAX_INSTANCES 256
-
 typedef struct {
 	WrenVM* vm;
 	struct engine_t* engine;
@@ -16,8 +14,10 @@ typedef struct {
 	WrenHandle* call_update;
 	WrenHandle* call_on_input;
 	WrenHandle* call_on_collision;
-	WrenHandle* instances[NB_WREN_MAX_INSTANCES];
-	entity_id_t instance_ids[NB_WREN_MAX_INSTANCES];
+	WrenHandle** instances;
+	int instance_capacity;
+	entity_id_t* instance_ids;
+	int instance_id_capacity;
 	int instance_count;
 	int ready;
 } wren_vm_t;

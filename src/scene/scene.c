@@ -2,7 +2,10 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "core/dynamic_array.h"
 
 static node_t* scene_get_node_internal(scene_t* scene, entity_id_t id) {
 	if (!scene || id == NB_ENTITY_INVALID) {
@@ -70,6 +73,63 @@ static void scene_detach_parent(scene_t* scene, node_t* node) {
 	}
 }
 
+static int scene_grow(scene_t* scene, int needed) {
+	void* data = NULL;
+	if (!scene || needed <= 0) {
+		return 1;
+	}
+
+	data = nb_array_grow(scene->nodes, &scene->node_capacity, needed, sizeof(*scene->nodes));
+	if (!data) { return 0; }
+	scene->nodes = data;
+
+	data = nb_array_grow(scene->ids, &scene->entity_capacity, needed, sizeof(*scene->ids));
+	if (!data) { return 0; }
+	scene->ids = data;
+
+	data = nb_array_grow(scene->transforms, &scene->transform_capacity, needed, sizeof(*scene->transforms));
+	if (!data) { return 0; }
+	scene->transforms = data;
+
+	data = nb_array_grow(scene->transform_entities, &scene->transform_entity_capacity, needed, sizeof(*scene->transform_entities));
+	if (!data) { return 0; }
+	scene->transform_entities = data;
+
+	data = nb_array_grow(scene->mesh_renderers, &scene->mesh_renderer_capacity, needed, sizeof(*scene->mesh_renderers));
+	if (!data) { return 0; }
+	scene->mesh_renderers = data;
+
+	data = nb_array_grow(scene->mesh_renderer_entities, &scene->mesh_renderer_entity_capacity, needed, sizeof(*scene->mesh_renderer_entities));
+	if (!data) { return 0; }
+	scene->mesh_renderer_entities = data;
+
+	data = nb_array_grow(scene->cameras, &scene->camera_capacity, needed, sizeof(*scene->cameras));
+	if (!data) { return 0; }
+	scene->cameras = data;
+
+	data = nb_array_grow(scene->camera_entities, &scene->camera_entity_capacity, needed, sizeof(*scene->camera_entities));
+	if (!data) { return 0; }
+	scene->camera_entities = data;
+
+	data = nb_array_grow(scene->lights, &scene->light_capacity, needed, sizeof(*scene->lights));
+	if (!data) { return 0; }
+	scene->lights = data;
+
+	data = nb_array_grow(scene->light_entities, &scene->light_entity_capacity, needed, sizeof(*scene->light_entities));
+	if (!data) { return 0; }
+	scene->light_entities = data;
+
+	data = nb_array_grow(scene->colliders, &scene->collider_capacity, needed, sizeof(*scene->colliders));
+	if (!data) { return 0; }
+	scene->colliders = data;
+
+	data = nb_array_grow(scene->collider_entities, &scene->collider_entity_capacity, needed, sizeof(*scene->collider_entities));
+	if (!data) { return 0; }
+	scene->collider_entities = data;
+
+	return 1;
+}
+
 void scene_init(scene_t* scene) {
 	if (!scene) {
 		return;
@@ -83,7 +143,90 @@ void scene_shutdown(scene_t* scene) {
 		return;
 	}
 
+	nb_array_free(scene->nodes);
+	nb_array_free(scene->ids);
+	nb_array_free(scene->transforms);
+	nb_array_free(scene->transform_entities);
+	nb_array_free(scene->mesh_renderers);
+	nb_array_free(scene->mesh_renderer_entities);
+	nb_array_free(scene->cameras);
+	nb_array_free(scene->camera_entities);
+	nb_array_free(scene->lights);
+	nb_array_free(scene->light_entities);
+	nb_array_free(scene->colliders);
+	nb_array_free(scene->collider_entities);
+
 	memset(scene, 0, sizeof(*scene));
+}
+
+int scene_copy(scene_t* dst, const scene_t* src) {
+	if (!dst || !src) {
+		return 0;
+	}
+
+	scene_shutdown(dst);
+	scene_init(dst);
+
+	int needed = src->node_count > src->entity_count ? src->node_count : src->entity_count;
+	if (needed > 0 && !scene_grow(dst, needed)) {
+		return 0;
+	}
+
+	if (needed > 0) {
+		memcpy(dst->nodes, src->nodes, (size_t)src->node_count * sizeof(*dst->nodes));
+		memcpy(dst->ids, src->ids, (size_t)src->entity_count * sizeof(*dst->ids));
+	}
+
+	dst->node_count = src->node_count;
+	dst->entity_count = src->entity_count;
+	dst->active_camera = src->active_camera;
+
+	dst->transform_count = src->transform_count;
+	dst->mesh_renderer_count = src->mesh_renderer_count;
+	dst->camera_count = src->camera_count;
+	dst->light_count = src->light_count;
+	dst->collider_count = src->collider_count;
+
+	if (src->transform_count > 0) {
+		memcpy(dst->transforms, src->transforms, (size_t)src->transform_count * sizeof(*dst->transforms));
+		memcpy(dst->transform_entities, src->transform_entities, (size_t)src->transform_count * sizeof(*dst->transform_entities));
+	}
+
+	if (src->mesh_renderer_count > 0) {
+		memcpy(dst->mesh_renderers, src->mesh_renderers, (size_t)src->mesh_renderer_count * sizeof(*dst->mesh_renderers));
+		memcpy(dst->mesh_renderer_entities, src->mesh_renderer_entities, (size_t)src->mesh_renderer_count * sizeof(*dst->mesh_renderer_entities));
+	}
+
+	if (src->camera_count > 0) {
+		memcpy(dst->cameras, src->cameras, (size_t)src->camera_count * sizeof(*dst->cameras));
+		memcpy(dst->camera_entities, src->camera_entities, (size_t)src->camera_count * sizeof(*dst->camera_entities));
+	}
+
+	if (src->light_count > 0) {
+		memcpy(dst->lights, src->lights, (size_t)src->light_count * sizeof(*dst->lights));
+		memcpy(dst->light_entities, src->light_entities, (size_t)src->light_count * sizeof(*dst->light_entities));
+	}
+
+	if (src->collider_count > 0) {
+		memcpy(dst->colliders, src->colliders, (size_t)src->collider_count * sizeof(*dst->colliders));
+		memcpy(dst->collider_entities, src->collider_entities, (size_t)src->collider_count * sizeof(*dst->collider_entities));
+	}
+
+	return 1;
+}
+
+static entity_id_t scene_next_entity_id(const scene_t* scene) {
+	entity_id_t max_id = NB_ENTITY_INVALID;
+	for (int i = 0; i < scene->entity_count; i++) {
+		if (scene->ids[i] > max_id) {
+			max_id = scene->ids[i];
+		}
+	}
+	if (max_id >= NB_SCENE_MAX_ENTITIES - 1) {
+		return NB_ENTITY_INVALID;
+	}
+
+	return max_id + 1;
 }
 
 entity_id_t scene_create_entity(scene_t* scene) {
@@ -91,7 +234,20 @@ entity_id_t scene_create_entity(scene_t* scene) {
 		return NB_ENTITY_INVALID;
 	}
 
-	entity_id_t id = (entity_id_t)(scene->entity_count + 1);
+	entity_id_t id = scene_next_entity_id(scene);
+	if (id == NB_ENTITY_INVALID) {
+		return NB_ENTITY_INVALID;
+	}
+
+	int needed = scene->node_count + 1;
+	if (scene->entity_count + 1 > needed) {
+		needed = scene->entity_count + 1;
+	}
+
+	if (!scene_grow(scene, needed)) {
+		return NB_ENTITY_INVALID;
+	}
+
 	node_t* node = &scene->nodes[scene->node_count];
 	memset(node, 0, sizeof(*node));
 
@@ -237,7 +393,7 @@ int scene_is_ancestor(scene_t* scene, entity_id_t ancestor, entity_id_t id) {
 	}
 
 	node_t* node = scene_get_node_internal(scene, id);
-	for (int depth = 0; node && depth < NB_SCENE_MAX_ENTITIES; depth++) {
+	for (int depth = 0; node && depth < scene->node_count; depth++) {
 		if (node->parent == ancestor) {
 			return 1;
 		}
@@ -323,12 +479,14 @@ int scene_set_node_tint(scene_t* scene, entity_id_t id, vec3_t tint) {
 }
 
 void scene_update_world_transforms(scene_t* scene) {
-	if (!scene) {
+	if (!scene || scene->node_count <= 0) {
 		return;
 	}
 
-	unsigned char updated[NB_SCENE_MAX_ENTITIES];
-	memset(updated, 0, sizeof(updated));
+	unsigned char* updated = (unsigned char*)calloc((size_t)scene->node_count, 1);
+	if (!updated) {
+		return;
+	}
 
 	for (int pass = 0; pass < scene->node_count; pass++) {
 		for (int i = 0; i < scene->node_count; i++) {
@@ -382,11 +540,17 @@ void scene_update_world_transforms(scene_t* scene) {
 			updated[i] = 1;
 		}
 	}
+
+	free(updated);
 }
 
-void scene_rebuild_cache(scene_t* scene) {
+int scene_rebuild_cache(scene_t* scene) {
 	if (!scene) {
-		return;
+		return 0;
+	}
+
+	if (!scene_grow(scene, scene->node_count)) {
+		return 0;
 	}
 
 	scene->transform_count = 0;
@@ -441,6 +605,8 @@ void scene_rebuild_cache(scene_t* scene) {
 	else if (scene_find_component(scene->camera_entities, scene->camera_count, scene->active_camera) < 0) {
 		scene->active_camera = scene->camera_entities[0];
 	}
+
+	return 1;
 }
 
 int scene_add_transform(scene_t* scene, entity_id_t id, transform_t transform) {
@@ -453,9 +619,8 @@ int scene_add_transform(scene_t* scene, entity_id_t id, transform_t transform) {
 	transform.initial_rotation = transform.rotation;
 	node->transform = transform;
 	node->components |= NB_NODE_COMPONENT_TRANSFORM;
-	scene_rebuild_cache(scene);
 
-	return 1;
+	return scene_rebuild_cache(scene) ? 1 : 0;
 }
 
 int scene_add_mesh_renderer(scene_t* scene, entity_id_t id, mesh_renderer_t renderer) {
@@ -466,9 +631,8 @@ int scene_add_mesh_renderer(scene_t* scene, entity_id_t id, mesh_renderer_t rend
 
 	node->mesh_renderer = renderer;
 	node->components |= NB_NODE_COMPONENT_MESH_RENDERER;
-	scene_rebuild_cache(scene);
 
-	return 1;
+	return scene_rebuild_cache(scene) ? 1 : 0;
 }
 
 int scene_add_camera(scene_t* scene, entity_id_t id, camera_t camera) {
@@ -479,9 +643,8 @@ int scene_add_camera(scene_t* scene, entity_id_t id, camera_t camera) {
 
 	node->camera = camera;
 	node->components |= NB_NODE_COMPONENT_CAMERA;
-	scene_rebuild_cache(scene);
 
-	return 1;
+	return scene_rebuild_cache(scene) ? 1 : 0;
 }
 
 int scene_add_light(scene_t* scene, entity_id_t id, light_t light) {
@@ -492,9 +655,8 @@ int scene_add_light(scene_t* scene, entity_id_t id, light_t light) {
 
 	node->light = light;
 	node->components |= NB_NODE_COMPONENT_LIGHT;
-	scene_rebuild_cache(scene);
 
-	return 1;
+	return scene_rebuild_cache(scene) ? 1 : 0;
 }
 
 int scene_add_collider(scene_t* scene, entity_id_t id, collider_t collider) {
@@ -513,9 +675,8 @@ int scene_add_collider(scene_t* scene, entity_id_t id, collider_t collider) {
 
 	node->collider = collider;
 	node->components |= NB_NODE_COMPONENT_COLLIDER;
-	scene_rebuild_cache(scene);
 
-	return 1;
+	return scene_rebuild_cache(scene) ? 1 : 0;
 }
 
 int scene_add_script(scene_t* scene, entity_id_t id, script_id script, const char* module) {
@@ -584,7 +745,6 @@ int scene_duplicate_entity(scene_t* scene, entity_id_t id) {
 
 	entity_id_t new_id = dst->id;
 	entity_id_t new_parent = src->parent;
-	int new_child_count = 0;
 	memcpy(dst, src, sizeof(*dst));
 	dst->id = new_id;
 	dst->parent = NB_ENTITY_INVALID;
@@ -604,7 +764,6 @@ int scene_duplicate_entity(scene_t* scene, entity_id_t id) {
 	}
 
 	scene_rebuild_cache(scene);
-	(void)new_child_count;
 	return 1;
 }
 

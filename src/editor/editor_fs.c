@@ -3,10 +3,12 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "editor/editor_fs.h"
@@ -14,6 +16,16 @@
 static char editor_fs_lower(char c) {
 	if (c >= 'A' && c <= 'Z') { return (char)(c - 'A' + 'a'); }
 	return c;
+}
+
+static int editor_fs_name_ends_with(const char* name, const char* suffix) {
+	size_t name_len = strlen(name);
+	size_t suffix_len = strlen(suffix);
+	if (name_len < suffix_len) { return 0; }
+	for (size_t i = 0; i < suffix_len; i++) {
+		if (editor_fs_lower(name[name_len - suffix_len + i]) != suffix[i]) { return 0; }
+	}
+	return 1;
 }
 
 static void editor_fs_join(char* out, size_t size, const char* a, const char* b) {
@@ -144,6 +156,7 @@ int editor_fs_list_dir(const char* dir, editor_fs_entry_t* out, int cap, int sho
 	struct dirent* item = NULL;
 	while ((item = readdir(handle)) != NULL && count < cap) {
 		if (strcmp(item->d_name, ".") == 0 || strcmp(item->d_name, "..") == 0) { continue; }
+		if (editor_fs_name_ends_with(item->d_name, ".meta")) { continue; }
 		if (!show_hidden && item->d_name[0] == '.') { continue; }
 		char path[NB_EDITOR_FS_PATH_MAX];
 		editor_fs_join(path, sizeof(path), dir, item->d_name);
@@ -290,6 +303,93 @@ int editor_fs_write_text(const char* path, const char* data, size_t size) {
 	int ok = written == size && ferror(file) == 0;
 	fclose(file);
 	return ok;
+}
+
+static int editor_fs_ext_equals(const char* path, const char* ext) {
+	const char* actual = editor_fs_ext(path);
+	while (*actual && *ext) {
+		if (editor_fs_lower(*actual) != *ext) { return 0; }
+		actual++;
+		ext++;
+	}
+	return *actual == '\0' && *ext == '\0';
+}
+
+int editor_fs_is_external_text(const char* path) {
+	if (!path || !*path || editor_fs_is_dir(path)) { return 0; }
+	const char* internal_exts[] = { "tscn", "tres", "clut", "wav", "obj", "ppm", "meta" };
+	for (size_t i = 0; i < sizeof(internal_exts) / sizeof(internal_exts[0]); i++) {
+		if (editor_fs_ext_equals(path, internal_exts[i])) { return 0; }
+	}
+	FILE* file = fopen(path, "rb");
+	if (!file) { return 0; }
+	unsigned char buffer[4096];
+	size_t count = fread(buffer, 1, sizeof(buffer), file);
+	int ok = ferror(file) == 0;
+	fclose(file);
+	if (!ok) { return 0; }
+	size_t control = 0;
+	for (size_t i = 0; i < count; i++) {
+		unsigned char c = buffer[i];
+		if (c == 0) { return 0; }
+		if (c < 0x20 && c != '\n' && c != '\r' && c != '\t' && c != '\f' && c != '\b') { control++; }
+	}
+	return count == 0 || control * 20 <= count;
+}
+
+static int editor_fs_executable_exists(const char* name) {
+	if (strchr(name, '/')) { return access(name, X_OK) == 0; }
+	const char* env_path = getenv("PATH");
+	if (!env_path) { return 0; }
+	char copy[NB_EDITOR_FS_PATH_MAX];
+	snprintf(copy, sizeof(copy), "%.*s", (int)sizeof(copy) - 1, env_path);
+	char* save = NULL;
+	for (char* dir = strtok_r(copy, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
+		char candidate[NB_EDITOR_FS_PATH_MAX];
+		int written = snprintf(candidate, sizeof(candidate), "%s/%s", dir[0] ? dir : ".", name);
+		if (written < 0 || (size_t)written >= sizeof(candidate)) { continue; }
+		if (access(candidate, X_OK) == 0) { return 1; }
+	}
+	return 0;
+}
+
+const char* editor_fs_find_text_editor(void) {
+	static const char* const editors[] = {
+		"code-oss", "code", "codium", "vscodium", "subl", "sublime_text", "sublime",
+		"gedit", "kate", "mousepad", "pluma", "xed", "leafpad", "atom", "neovide", "nvim-qt",
+		"emacs", "nvim", "vim", "vi", "nano", "micro"
+	};
+	for (size_t i = 0; i < sizeof(editors) / sizeof(editors[0]); i++) {
+		if (editor_fs_executable_exists(editors[i])) { return editors[i]; }
+	}
+	return NULL;
+}
+
+int editor_fs_open_external_text(const char* path) {
+	if (!editor_fs_is_external_text(path)) { return 0; }
+	const char* editor = editor_fs_find_text_editor();
+	if (!editor) { return 0; }
+
+	pid_t pid = fork();
+	if (pid < 0) { return 0; }
+	if (pid == 0) {
+		setsid();
+		pid_t child = fork();
+		if (child < 0) { _exit(127); }
+		if (child > 0) { _exit(0); }
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, STDOUT_FILENO);
+			dup2(devnull, STDERR_FILENO);
+			if (devnull > STDERR_FILENO) { close(devnull); }
+		}
+		execlp(editor, editor, path, (char*)NULL);
+		_exit(127);
+	}
+
+	int status = 0;
+	waitpid(pid, &status, 0);
+	return 1;
 }
 
 static int editor_fs_is_boundary(char c) {

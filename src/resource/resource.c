@@ -1,8 +1,10 @@
 #include <assert.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "core/dynamic_array.h"
 #include "resource/resource.h"
 
 static uint32_t resource_make_id(int index, uint32_t generation) {
@@ -77,6 +79,22 @@ static int resource_texture_layout(const texture_t* texture, size_t* pixel_bytes
 	return *pixel_bytes > INT_MAX || *palette_bytes > INT_MAX ? 0 : 1;
 }
 
+static void* resource_grow_slots(void* data, int* count, int* capacity, size_t element_size) {
+	if (!count || !capacity || *count >= NB_RESOURCE_MAX_SLOTS) {
+		return NULL;
+	}
+
+	void* grown = nb_array_grow(data, capacity, *count + 1, element_size);
+	if (!grown) {
+		return NULL;
+	}
+
+	memset((unsigned char*)grown + (size_t)*count * element_size, 0, element_size);
+	(*count)++;
+
+	return grown;
+}
+
 void resource_store_init(resource_store_t* store, int vram_limit) {
 	if (!store) { return; }
 
@@ -87,57 +105,48 @@ void resource_store_init(resource_store_t* store, int vram_limit) {
 void resource_store_shutdown(resource_store_t* store) {
 	if (!store) { return; }
 
-	for (int i = 0; i < NB_RESOURCE_MAX_MESHES; i++) {
+	for (int i = 0; i < store->mesh_count; i++) {
 		mesh_slot_t* slot = &store->meshes[i];
 		if (slot->mesh) {
 			resource_free_mesh(slot->mesh);
-			slot->mesh = NULL;
-			slot->generation++;
-			if (slot->generation == 0) { slot->generation = 1; }
 		}
 	}
 
-	for (int i = 0; i < NB_RESOURCE_MAX_TEXTURES; i++) {
+	for (int i = 0; i < store->texture_count; i++) {
 		texture_slot_t* slot = &store->textures[i];
 		if (slot->texture) {
 			resource_free_texture(slot->texture);
-			slot->texture = NULL;
-			slot->generation++;
-			if (slot->generation == 0) { slot->generation = 1; }
 		}
 	}
 
-	for (int i = 0; i < NB_RESOURCE_MAX_MATERIALS; i++) {
+	for (int i = 0; i < store->material_count; i++) {
 		material_slot_t* slot = &store->materials[i];
 		if (slot->material) {
 			free(slot->material);
-			slot->material = NULL;
-			slot->generation++;
-			if (slot->generation == 0) { slot->generation = 1; }
 		}
 	}
 
-	for (int i = 0; i < NB_RESOURCE_MAX_SCRIPTS; i++) {
+	for (int i = 0; i < store->script_count; i++) {
 		script_slot_t* slot = &store->scripts[i];
 		if (slot->source) {
 			free(slot->source);
-			slot->source = NULL;
-			slot->generation++;
-			if (slot->generation == 0) { slot->generation = 1; }
 		}
 	}
 
-	for (int i = 0; i < NB_RESOURCE_MAX_AUDIO; i++) {
+	for (int i = 0; i < store->audio_count; i++) {
 		audio_slot_t* slot = &store->audio[i];
 		if (slot->stream) {
 			resource_free_audio(slot->stream);
-			slot->stream = NULL;
-			slot->generation++;
-			if (slot->generation == 0) { slot->generation = 1; }
 		}
 	}
 
-	store->vram_used = 0;
+	nb_array_free(store->meshes);
+	nb_array_free(store->textures);
+	nb_array_free(store->materials);
+	nb_array_free(store->scripts);
+	nb_array_free(store->audio);
+
+	memset(store, 0, sizeof(*store));
 }
 
 int resource_vram_used(const resource_store_t* store) {
@@ -148,38 +157,48 @@ mesh_id resource_add_mesh(resource_store_t* store, const mesh_t* mesh) {
 	if (!store || !mesh || !mesh->vertices || !mesh->triangles) { return NB_RESOURCE_INVALID_ID; }
 	if (mesh->vertex_count <= 0 || mesh->triangle_count <= 0) { return NB_RESOURCE_INVALID_ID; }
 
-	for (int i = 0; i < NB_RESOURCE_MAX_MESHES; i++) {
-		mesh_slot_t* slot = &store->meshes[i];
-		if (slot->mesh) { continue; }
-
-		mesh_t* copy = (mesh_t*)malloc(sizeof(mesh_t));
-		if (!copy) { return NB_RESOURCE_INVALID_ID; }
-
-		copy->vertices = NULL;
-		copy->triangles = NULL;
-		copy->vertex_count = 0;
-		copy->triangle_count = 0;
-
-		copy->vertices = (vertex_t*)malloc((size_t)mesh->vertex_count * sizeof(vertex_t));
-		copy->triangles = (triangle_t*)malloc((size_t)mesh->triangle_count * sizeof(triangle_t));
-		if (!copy->vertices || !copy->triangles) {
-			resource_free_mesh(copy);
-			return NB_RESOURCE_INVALID_ID;
+	mesh_slot_t* slot = NULL;
+	for (int i = 0; i < store->mesh_count; i++) {
+		if (!store->meshes[i].mesh) {
+			slot = &store->meshes[i];
+			break;
 		}
-
-		memcpy(copy->vertices, mesh->vertices, (size_t)mesh->vertex_count * sizeof(vertex_t));
-		memcpy(copy->triangles, mesh->triangles, (size_t)mesh->triangle_count * sizeof(triangle_t));
-		copy->vertex_count = mesh->vertex_count;
-		copy->triangle_count = mesh->triangle_count;
-
-		slot->generation++;
-		if (slot->generation == 0) { slot->generation = 1; }
-		slot->mesh = copy;
-
-		return resource_make_id(i, slot->generation);
 	}
 
-	return NB_RESOURCE_INVALID_ID;
+	if (!slot) {
+		void* grown = resource_grow_slots(store->meshes, &store->mesh_count, &store->mesh_capacity, sizeof(*store->meshes));
+		if (!grown) { return NB_RESOURCE_INVALID_ID; }
+		store->meshes = grown;
+		slot = &store->meshes[store->mesh_count - 1];
+	}
+
+	mesh_t* copy = (mesh_t*)malloc(sizeof(mesh_t));
+	if (!copy) { return NB_RESOURCE_INVALID_ID; }
+
+	copy->vertices = NULL;
+	copy->triangles = NULL;
+	copy->vertex_count = 0;
+	copy->triangle_count = 0;
+
+	copy->vertices = (vertex_t*)malloc((size_t)mesh->vertex_count * sizeof(vertex_t));
+	copy->triangles = (triangle_t*)malloc((size_t)mesh->triangle_count * sizeof(triangle_t));
+	if (!copy->vertices || !copy->triangles) {
+		resource_free_mesh(copy);
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	memcpy(copy->vertices, mesh->vertices, (size_t)mesh->vertex_count * sizeof(vertex_t));
+	memcpy(copy->triangles, mesh->triangles, (size_t)mesh->triangle_count * sizeof(triangle_t));
+	copy->vertex_count = mesh->vertex_count;
+	copy->triangle_count = mesh->triangle_count;
+
+	slot->generation++;
+	if (slot->generation == 0) { slot->generation = 1; }
+	slot->mesh = copy;
+
+	int index = (int)(slot - store->meshes);
+
+	return resource_make_id(index, slot->generation);
 }
 
 texture_id resource_add_texture(resource_store_t* store, const texture_t* texture) {
@@ -193,83 +212,113 @@ texture_id resource_add_texture(resource_store_t* store, const texture_t* textur
 	assert(store->vram_limit >= 0 && store->vram_used >= 0 && total_bytes >= 0);
 	if (store->vram_used + total_bytes > store->vram_limit) { return NB_RESOURCE_INVALID_ID; }
 
-	for (int i = 0; i < NB_RESOURCE_MAX_TEXTURES; i++) {
-		texture_slot_t* slot = &store->textures[i];
-		if (slot->texture) { continue; }
-
-		uint8_t* pixels = (uint8_t*)malloc(pixel_bytes);
-		uint16_t* palette = (uint16_t*)malloc(palette_bytes);
-		texture_t* copy = (texture_t*)malloc(sizeof(texture_t));
-		if (!pixels || !palette || !copy) {
-			free(pixels);
-			free(palette);
-			free(copy);
-			return NB_RESOURCE_INVALID_ID;
+	texture_slot_t* slot = NULL;
+	for (int i = 0; i < store->texture_count; i++) {
+		if (!store->textures[i].texture) {
+			slot = &store->textures[i];
+			break;
 		}
-
-		memcpy(pixels, texture->pixels, pixel_bytes);
-		memcpy(palette, texture->palette, palette_bytes);
-
-		copy->width = texture->width;
-		copy->height = texture->height;
-		copy->format = texture->format;
-		copy->pixels = pixels;
-		copy->palette = palette;
-		copy->transparent_index = texture->transparent_index;
-
-		slot->generation++;
-		if (slot->generation == 0) { slot->generation = 1; }
-		slot->texture = copy;
-		store->vram_used += total_bytes;
-
-		return resource_make_id(i, slot->generation);
 	}
 
-	return NB_RESOURCE_INVALID_ID;
+	if (!slot) {
+		void* grown = resource_grow_slots(store->textures, &store->texture_count, &store->texture_capacity, sizeof(*store->textures));
+		if (!grown) { return NB_RESOURCE_INVALID_ID; }
+		store->textures = grown;
+		slot = &store->textures[store->texture_count - 1];
+	}
+
+	uint8_t* pixels = (uint8_t*)malloc(pixel_bytes);
+	uint16_t* palette = (uint16_t*)malloc(palette_bytes);
+	texture_t* copy = (texture_t*)malloc(sizeof(texture_t));
+	if (!pixels || !palette || !copy) {
+		free(pixels);
+		free(palette);
+		free(copy);
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	memcpy(pixels, texture->pixels, pixel_bytes);
+	memcpy(palette, texture->palette, palette_bytes);
+
+	copy->width = texture->width;
+	copy->height = texture->height;
+	copy->format = texture->format;
+	copy->pixels = pixels;
+	copy->palette = palette;
+	copy->transparent_index = texture->transparent_index;
+
+	slot->generation++;
+	if (slot->generation == 0) { slot->generation = 1; }
+	slot->texture = copy;
+	store->vram_used += total_bytes;
+
+	int index = (int)(slot - store->textures);
+
+	return resource_make_id(index, slot->generation);
 }
 
 material_id resource_add_material(resource_store_t* store, const material_t* material) {
 	if (!store || !material) { return NB_RESOURCE_INVALID_ID; }
 
-	for (int i = 0; i < NB_RESOURCE_MAX_MATERIALS; i++) {
-		material_slot_t* slot = &store->materials[i];
-		if (slot->material) { continue; }
-
-		material_t* copy = (material_t*)malloc(sizeof(material_t));
-		if (!copy) { return NB_RESOURCE_INVALID_ID; }
-
-		*copy = *material;
-
-		slot->generation++;
-		if (slot->generation == 0) { slot->generation = 1; }
-		slot->material = copy;
-
-		return resource_make_id(i, slot->generation);
+	material_slot_t* slot = NULL;
+	for (int i = 0; i < store->material_count; i++) {
+		if (!store->materials[i].material) {
+			slot = &store->materials[i];
+			break;
+		}
 	}
 
-	return NB_RESOURCE_INVALID_ID;
+	if (!slot) {
+		void* grown = resource_grow_slots(store->materials, &store->material_count, &store->material_capacity, sizeof(*store->materials));
+		if (!grown) { return NB_RESOURCE_INVALID_ID; }
+		store->materials = grown;
+		slot = &store->materials[store->material_count - 1];
+	}
+
+	material_t* copy = (material_t*)malloc(sizeof(material_t));
+	if (!copy) { return NB_RESOURCE_INVALID_ID; }
+
+	*copy = *material;
+
+	slot->generation++;
+	if (slot->generation == 0) { slot->generation = 1; }
+	slot->material = copy;
+
+	int index = (int)(slot - store->materials);
+
+	return resource_make_id(index, slot->generation);
 }
 
 script_id resource_add_script(resource_store_t* store, const char* source) {
 	if (!store || !source) { return NB_RESOURCE_INVALID_ID; }
 
-	for (int i = 0; i < NB_RESOURCE_MAX_SCRIPTS; i++) {
-		script_slot_t* slot = &store->scripts[i];
-		if (slot->source) { continue; }
-
-		size_t length = strlen(source) + 1;
-		char* copy = (char*)malloc(length);
-		if (!copy) { return NB_RESOURCE_INVALID_ID; }
-
-		memcpy(copy, source, length);
-		slot->generation++;
-		if (slot->generation == 0) { slot->generation = 1; }
-		slot->source = copy;
-
-		return resource_make_id(i, slot->generation);
+	script_slot_t* slot = NULL;
+	for (int i = 0; i < store->script_count; i++) {
+		if (!store->scripts[i].source) {
+			slot = &store->scripts[i];
+			break;
+		}
 	}
 
-	return NB_RESOURCE_INVALID_ID;
+	if (!slot) {
+		void* grown = resource_grow_slots(store->scripts, &store->script_count, &store->script_capacity, sizeof(*store->scripts));
+		if (!grown) { return NB_RESOURCE_INVALID_ID; }
+		store->scripts = grown;
+		slot = &store->scripts[store->script_count - 1];
+	}
+
+	size_t length = strlen(source) + 1;
+	char* copy = (char*)malloc(length);
+	if (!copy) { return NB_RESOURCE_INVALID_ID; }
+
+	memcpy(copy, source, length);
+	slot->generation++;
+	if (slot->generation == 0) { slot->generation = 1; }
+	slot->source = copy;
+
+	int index = (int)(slot - store->scripts);
+
+	return resource_make_id(index, slot->generation);
 }
 
 audio_id resource_add_audio(resource_store_t* store, const audio_stream_t* stream, const char* name) {
@@ -281,48 +330,54 @@ audio_id resource_add_audio(resource_store_t* store, const audio_stream_t* strea
 		return NB_RESOURCE_INVALID_ID;
 	}
 
-	for (int i = 0; i < NB_RESOURCE_MAX_AUDIO; i++) {
-		audio_slot_t* slot = &store->audio[i];
-		if (slot->stream) { continue; }
-
-		size_t bytes = (size_t)stream->frame_count * (size_t)stream->channels * sizeof(int16_t);
-		audio_stream_t* copy = (audio_stream_t*)malloc(sizeof(audio_stream_t));
-		if (!copy) {
-			return NB_RESOURCE_INVALID_ID;
+	audio_slot_t* slot = NULL;
+	for (int i = 0; i < store->audio_count; i++) {
+		if (!store->audio[i].stream) {
+			slot = &store->audio[i];
+			break;
 		}
-
-		copy->samples = (int16_t*)malloc(bytes);
-		if (!copy->samples) {
-			free(copy);
-			return NB_RESOURCE_INVALID_ID;
-		}
-
-		memcpy(copy->samples, stream->samples, bytes);
-		copy->sample_rate = stream->sample_rate;
-		copy->channels = stream->channels;
-		copy->frame_count = stream->frame_count;
-
-		slot->generation++;
-		if (slot->generation == 0) { slot->generation = 1; }
-		slot->stream = copy;
-		snprintf(slot->name, sizeof(slot->name), "%s", name);
-
-		return resource_make_id(i, slot->generation);
 	}
 
-	return NB_RESOURCE_INVALID_ID;
+	if (!slot) {
+		void* grown = resource_grow_slots(store->audio, &store->audio_count, &store->audio_capacity, sizeof(*store->audio));
+		if (!grown) { return NB_RESOURCE_INVALID_ID; }
+		store->audio = grown;
+		slot = &store->audio[store->audio_count - 1];
+	}
+
+	size_t bytes = (size_t)stream->frame_count * (size_t)stream->channels * sizeof(int16_t);
+	audio_stream_t* copy = (audio_stream_t*)malloc(sizeof(audio_stream_t));
+	if (!copy) { return NB_RESOURCE_INVALID_ID; }
+
+	copy->samples = (int16_t*)malloc(bytes);
+	if (!copy->samples) {
+		free(copy);
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	memcpy(copy->samples, stream->samples, bytes);
+	copy->sample_rate = stream->sample_rate;
+	copy->channels = stream->channels;
+	copy->frame_count = stream->frame_count;
+
+	slot->generation++;
+	if (slot->generation == 0) { slot->generation = 1; }
+	slot->stream = copy;
+	snprintf(slot->name, sizeof(slot->name), "%s", name);
+
+	int index = (int)(slot - store->audio);
+
+	return resource_make_id(index, slot->generation);
 }
 
 mesh_t* resource_get_mesh(resource_store_t* store, mesh_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
 	int index = resource_index(id);
-	assert(index >= 0 && index < NB_RESOURCE_MAX_MESHES);
 
-	if (index < 0 || index >= NB_RESOURCE_MAX_MESHES) { return NULL; }
+	if (index < 0 || index >= store->mesh_count) { return NULL; }
 
 	mesh_slot_t* slot = &store->meshes[index];
-	assert(slot->generation != 0);
 	if (!slot->mesh || slot->generation != resource_generation(id)) { return NULL; }
 
 	return slot->mesh;
@@ -332,12 +387,10 @@ texture_t* resource_get_texture(resource_store_t* store, texture_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
 	int index = resource_index(id);
-	assert(index >= 0 && index < NB_RESOURCE_MAX_TEXTURES);
 
-	if (index < 0 || index >= NB_RESOURCE_MAX_TEXTURES) { return NULL; }
+	if (index < 0 || index >= store->texture_count) { return NULL; }
 
 	texture_slot_t* slot = &store->textures[index];
-	assert(slot->generation != 0);
 	if (!slot->texture || slot->generation != resource_generation(id)) { return NULL; }
 
 	return slot->texture;
@@ -347,12 +400,10 @@ material_t* resource_get_material(resource_store_t* store, material_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
 	int index = resource_index(id);
-	assert(index >= 0 && index < NB_RESOURCE_MAX_MATERIALS);
 
-	if (index < 0 || index >= NB_RESOURCE_MAX_MATERIALS) { return NULL; }
+	if (index < 0 || index >= store->material_count) { return NULL; }
 
 	material_slot_t* slot = &store->materials[index];
-	assert(slot->generation != 0);
 	if (!slot->material || slot->generation != resource_generation(id)) { return NULL; }
 
 	return slot->material;
@@ -362,12 +413,10 @@ const char* resource_get_script(resource_store_t* store, script_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
 	int index = resource_index(id);
-	assert(index >= 0 && index < NB_RESOURCE_MAX_SCRIPTS);
 
-	if (index < 0 || index >= NB_RESOURCE_MAX_SCRIPTS) { return NULL; }
+	if (index < 0 || index >= store->script_count) { return NULL; }
 
 	script_slot_t* slot = &store->scripts[index];
-	assert(slot->generation != 0);
 	if (!slot->source || slot->generation != resource_generation(id)) { return NULL; }
 
 	return slot->source;
@@ -377,12 +426,10 @@ audio_stream_t* resource_get_audio(resource_store_t* store, audio_id id) {
 	if (!store || id == NB_RESOURCE_INVALID_ID) { return NULL; }
 
 	int index = resource_index(id);
-	assert(index >= 0 && index < NB_RESOURCE_MAX_AUDIO);
 
-	if (index < 0 || index >= NB_RESOURCE_MAX_AUDIO) { return NULL; }
+	if (index < 0 || index >= store->audio_count) { return NULL; }
 
 	audio_slot_t* slot = &store->audio[index];
-	assert(slot->generation != 0);
 	if (!slot->stream || slot->generation != resource_generation(id)) { return NULL; }
 
 	return slot->stream;
@@ -391,7 +438,7 @@ audio_stream_t* resource_get_audio(resource_store_t* store, audio_id id) {
 audio_id resource_find_audio(resource_store_t* store, const char* name) {
 	if (!store || !name || !*name) { return NB_RESOURCE_INVALID_ID; }
 
-	for (int i = 0; i < NB_RESOURCE_MAX_AUDIO; i++) {
+	for (int i = 0; i < store->audio_count; i++) {
 		audio_slot_t* slot = &store->audio[i];
 		if (slot->stream && strcmp(slot->name, name) == 0) {
 			return resource_make_id(i, slot->generation);

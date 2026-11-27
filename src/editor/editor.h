@@ -14,11 +14,7 @@ typedef enum {
 	NB_EDITOR_TOOL_SCALE = 3
 } editor_tool_t;
 
-#define NB_EDITOR_UNDO_MAX 64
-#define NB_EDITOR_SCENE_TABS_MAX 16
-#define NB_EDITOR_EXPLORER_TREE_MAX 64
-#define NB_EDITOR_EXPLORER_TREE_ROWS_MAX 512
-#define NB_EDITOR_EXPLORER_HISTORY_MAX 32
+#define NB_EDITOR_UNDO_LIMIT 64
 #define NB_EDITOR_INSPECTOR_CLUT_MAX 256
 #define NB_EDITOR_INSPECTOR_TRES_EXT_MAX 64
 #define NB_EDITOR_INSPECTOR_TRES_LINE_MAX 512
@@ -91,7 +87,9 @@ typedef struct {
 	unsigned int selected_entity;
 	unsigned int hierarchy_scroll_x;
 	unsigned int hierarchy_scroll_y;
-	unsigned char hierarchy_expanded[NB_SCENE_MAX_ENTITIES];
+	unsigned char* hierarchy_expanded;
+	int hierarchy_expanded_count;
+	int hierarchy_expanded_capacity;
 	int dirty;
 } editor_scene_tab_t;
 
@@ -103,16 +101,18 @@ typedef struct {
 	char status[256];
 	editor_fs_entry_t files[NB_EDITOR_FS_MAX_ENTRIES];
 	int file_count;
-	char expanded[NB_EDITOR_EXPLORER_TREE_MAX][NB_EDITOR_FS_PATH_MAX];
+	char (*expanded)[NB_EDITOR_FS_PATH_MAX];
 	int expanded_count;
+	int expanded_capacity;
 	char rename_buffer[NB_EDITOR_FS_NAME_MAX];
 	char rename_path[NB_EDITOR_FS_PATH_MAX];
 	char drag_path[NB_EDITOR_FS_PATH_MAX];
 	char drop_dir[NB_EDITOR_FS_PATH_MAX];
 	char context_path[NB_EDITOR_FS_PATH_MAX];
 	float context_rect[4];
-	char history[NB_EDITOR_EXPLORER_HISTORY_MAX][NB_EDITOR_FS_PATH_MAX];
+	char (*history)[NB_EDITOR_FS_PATH_MAX];
 	int history_count;
+	int history_capacity;
 	int history_index;
 	int context_empty;
 	int tile_width;
@@ -135,9 +135,10 @@ typedef struct {
 	unsigned int tree_scroll_y;
 	float files_rect[4];
 	float tree_rect[4];
-	char tree_row_paths[NB_EDITOR_EXPLORER_TREE_ROWS_MAX][NB_EDITOR_FS_PATH_MAX];
-	float tree_row_rects[NB_EDITOR_EXPLORER_TREE_ROWS_MAX][4];
+	char (*tree_row_paths)[NB_EDITOR_FS_PATH_MAX];
+	float (*tree_row_rects)[4];
 	int tree_row_count;
+	int tree_row_capacity;
 } editor_explorer_t;
 
 typedef struct {
@@ -168,10 +169,12 @@ typedef struct {
 	int gizmo_drag_mouse_x;
 	int gizmo_drag_mouse_y;
 	void* tool_textures[4];
-	editor_snapshot_t undo[NB_EDITOR_UNDO_MAX];
-	editor_snapshot_t redo[NB_EDITOR_UNDO_MAX];
+	editor_snapshot_t* undo;
 	int undo_count;
+	int undo_capacity;
+	editor_snapshot_t* redo;
 	int redo_count;
+	int redo_capacity;
 	int history_suspended;
 	double last_save_time;
 	double autosave_timer;
@@ -184,7 +187,9 @@ typedef struct {
 	int has_pre_edit;
 	unsigned int hierarchy_scroll_x;
 	unsigned int hierarchy_scroll_y;
-	unsigned char hierarchy_expanded[NB_SCENE_MAX_ENTITIES];
+	unsigned char* hierarchy_expanded;
+	int hierarchy_expanded_count;
+	int hierarchy_expanded_capacity;
 	char hierarchy_filter[64];
 	unsigned int hierarchy_context_entity;
 	float hierarchy_context_rect[4];
@@ -223,8 +228,9 @@ typedef struct {
 	double inspector_wav_end;
 	unsigned int inspector_scroll_x;
 	unsigned int inspector_scroll_y;
-	editor_scene_tab_t tabs[NB_EDITOR_SCENE_TABS_MAX];
+	editor_scene_tab_t* tabs;
 	int tab_count;
+	int tab_capacity;
 	int active_tab;
 	editor_explorer_t explorer;
 	char dialog_path[NB_EDITOR_FS_PATH_MAX];
