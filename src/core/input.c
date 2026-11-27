@@ -33,6 +33,8 @@ void input_init(input_state_t* state, const render_config_t* config) {
 	state->count = 0;
 	state->mouse_dx = 0;
 	state->mouse_dy = 0;
+	state->mouse_x = 0;
+	state->mouse_y = 0;
 	state->quit = 0;
 	for (int i = 0; i < NB_PLATFORM_SCANCODE_COUNT; i++) { state->key_to_action[i] = -1; }
 	for (int i = 0; i < NB_INPUT_ACTION_MAX; i++) { state->names[i][0] = '\0'; }
@@ -81,6 +83,8 @@ void input_update(input_state_t* state, platform_t* platform) {
 	}
 
 	platform_mouse_delta(platform, &state->mouse_dx, &state->mouse_dy);
+	state->mouse_x = platform->mouse_x;
+	state->mouse_y = platform->mouse_y;
 }
 
 void input_clear_transient(input_state_t* state) {

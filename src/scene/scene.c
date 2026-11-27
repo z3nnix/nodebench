@@ -231,6 +231,65 @@ int scene_set_node_parent(scene_t* scene, entity_id_t id, entity_id_t parent) {
 	return 1;
 }
 
+int scene_is_ancestor(scene_t* scene, entity_id_t ancestor, entity_id_t id) {
+	if (!scene || ancestor == NB_ENTITY_INVALID || id == NB_ENTITY_INVALID || ancestor == id) {
+		return 0;
+	}
+
+	node_t* node = scene_get_node_internal(scene, id);
+	for (int depth = 0; node && depth < NB_SCENE_MAX_ENTITIES; depth++) {
+		if (node->parent == ancestor) {
+			return 1;
+		}
+		node = scene_get_node_internal(scene, node->parent);
+	}
+
+	return 0;
+}
+
+int scene_move_node(scene_t* scene, entity_id_t id, entity_id_t parent, int index) {
+	if (!scene) { return 0; }
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node || id == parent) { return 0; }
+
+	node_t* parent_node = NULL;
+	if (parent != NB_ENTITY_INVALID) {
+		parent_node = scene_get_node_internal(scene, parent);
+		if (!parent_node) { return 0; }
+	}
+	if (scene_is_ancestor(scene, id, parent)) { return 0; }
+
+	entity_id_t old_parent = node->parent;
+	int old_index = -1;
+	node_t* old_parent_node = scene_get_node_internal(scene, old_parent);
+	if (old_parent_node) {
+		for (int i = 0; i < old_parent_node->child_count; i++) {
+			if (old_parent_node->children[i] == id) {
+				old_index = i;
+				break;
+			}
+		}
+	}
+
+	int target_count = parent_node ? parent_node->child_count : 0;
+	if (old_parent == parent && old_index >= 0) { target_count--; }
+	if (target_count >= NB_NODE_MAX_CHILDREN) { return 0; }
+
+	scene_detach_parent(scene, node);
+	node->parent = NB_ENTITY_INVALID;
+	if (!parent_node) { return 1; }
+
+	if (index < 0 || index > target_count) { index = target_count; }
+	for (int i = target_count; i > index; i--) {
+		parent_node->children[i] = parent_node->children[i - 1];
+	}
+	parent_node->children[index] = id;
+	parent_node->child_count++;
+	node->parent = parent;
+
+	return 1;
+}
+
 int scene_set_node_visible(scene_t* scene, entity_id_t id, int visible) {
 	node_t* node = scene_get_node_internal(scene, id);
 	if (!node) {
@@ -469,6 +528,83 @@ int scene_add_script(scene_t* scene, entity_id_t id, script_id script, const cha
 	snprintf(node->script_module, sizeof(node->script_module), "%s", module);
 	node->components |= NB_NODE_COMPONENT_SCRIPT;
 
+	return 1;
+}
+
+int scene_remove_entity(scene_t* scene, entity_id_t id) {
+	node_t* node = scene_get_node_internal(scene, id);
+	if (!node) { return 0; }
+
+	while (node->child_count > 0) {
+		entity_id_t child = node->children[0];
+		if (!scene_remove_entity(scene, child)) { return 0; }
+		node = scene_get_node_internal(scene, id);
+		if (!node) { return 1; }
+	}
+
+	scene_detach_parent(scene, node);
+
+	int idx = -1;
+	for (int i = 0; i < scene->node_count; i++) {
+		if (scene->nodes[i].id == id) {
+			idx = i;
+			break;
+		}
+	}
+	if (idx < 0) { return 0; }
+
+	for (int i = idx + 1; i < scene->node_count; i++) {
+		scene->nodes[i - 1] = scene->nodes[i];
+	}
+	scene->node_count--;
+
+	for (int i = 0; i < scene->entity_count; i++) {
+		if (scene->ids[i] == id) {
+			for (int j = i + 1; j < scene->entity_count; j++) {
+				scene->ids[j - 1] = scene->ids[j];
+			}
+			scene->entity_count--;
+			break;
+		}
+	}
+
+	if (scene->active_camera == id) { scene->active_camera = NB_ENTITY_INVALID; }
+	scene_rebuild_cache(scene);
+	return 1;
+}
+
+int scene_duplicate_entity(scene_t* scene, entity_id_t id) {
+	node_t* src = scene_get_node_internal(scene, id);
+	if (!src) { return 0; }
+
+	entity_id_t nid = scene_create_entity(scene);
+	if (nid == NB_ENTITY_INVALID) { return 0; }
+	node_t* dst = scene_get_node_internal(scene, nid);
+	if (!dst) { return 0; }
+
+	entity_id_t new_id = dst->id;
+	entity_id_t new_parent = src->parent;
+	int new_child_count = 0;
+	memcpy(dst, src, sizeof(*dst));
+	dst->id = new_id;
+	dst->parent = NB_ENTITY_INVALID;
+	dst->child_count = 0;
+	for (int i = 0; i < NB_NODE_MAX_CHILDREN; i++) { dst->children[i] = NB_ENTITY_INVALID; }
+	dst->script_instance = NULL;
+	snprintf(dst->name, sizeof(dst->name), "%s_copy", src->name);
+	for (int i = 0; i < scene->node_count; i++) {
+		if (scene->nodes[i].id != nid && strcmp(scene->nodes[i].name, dst->name) == 0) {
+			snprintf(dst->name, sizeof(dst->name), "%s_%u", src->name, (unsigned int)nid);
+			break;
+		}
+	}
+
+	if (new_parent != NB_ENTITY_INVALID) {
+		scene_set_node_parent(scene, nid, new_parent);
+	}
+
+	scene_rebuild_cache(scene);
+	(void)new_child_count;
 	return 1;
 }
 

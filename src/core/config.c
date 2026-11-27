@@ -216,6 +216,8 @@ static int config_set_value(render_config_t* config, const char* key, const char
 
 	if (strcmp(key, "virtual_resolution") == 0) { return parse_pair_ints(value, 'x', &config->width, &config->height); }
 
+	else if (strcmp(key, "window_resolution") == 0) { return parse_pair_ints(value, 'x', &config->window_width, &config->window_height); }
+
 	else if (strcmp(key, "vertex_snap_grid") == 0) { return parse_pair_ints(value, 'x', &config->snap_grid_width, &config->snap_grid_height); }
 
 	else if (strcmp(key, "affine_strength") == 0) { return parse_float(value, &config->affine_strength); }
@@ -264,6 +266,12 @@ static int config_set_value(render_config_t* config, const char* key, const char
 
 	else if (strcmp(key, "hud_debug_enabled") == 0) { return parse_bool(value, &config->hud_debug_enabled); }
 
+	else if (strcmp(key, "editor_enabled") == 0) {
+		if (!parse_bool(value, &config->editor_enabled)) { return 0; }
+		snprintf(config->mode, sizeof(config->mode), "%s", config->editor_enabled ? "editor" : "game");
+		return 1;
+	}
+
 	else if (strcmp(key, "max_frames") == 0) { return parse_int(value, &config->max_frames); }
 
 	else if (strcmp(key, "log_level") == 0) { return parse_log_level(value, &config->log_level); }
@@ -274,9 +282,22 @@ static int config_set_value(render_config_t* config, const char* key, const char
 		return 1;
 	}
 
-	else if (strcmp(key, "scene_path") == 0) {
-		if (strlen(value) >= sizeof(config->scene_path)) { return 0; }
+	else if (strcmp(key, "scene_path") == 0 || strcmp(key, "scene") == 0) {
+		if (!value[0] || strlen(value) >= sizeof(config->scene_path)) { return 0; }
 		snprintf(config->scene_path, sizeof(config->scene_path), "%s", value);
+		return 1;
+	}
+
+	else if (strcmp(key, "project_name") == 0) {
+		if (strlen(value) >= sizeof(config->project_name)) { return 0; }
+		snprintf(config->project_name, sizeof(config->project_name), "%s", value);
+		return 1;
+	}
+
+	else if (strcmp(key, "mode") == 0) {
+		if (strcmp(value, "game") != 0 && strcmp(value, "editor") != 0) { return 0; }
+		snprintf(config->mode, sizeof(config->mode), "%s", value);
+		config->editor_enabled = strcmp(value, "editor") == 0 ? 1 : 0;
 		return 1;
 	}
 
@@ -293,6 +314,7 @@ static int file_exists(const char* path) {
 static int config_validate(const render_config_t* config) {
 	if (!config) { return 0; }
 	if (config->width <= 0 || config->height <= 0) { return 0; }
+	if (config->window_width <= 0 || config->window_height <= 0) { return 0; }
 	if (config->snap_grid_width <= 0 || config->snap_grid_height <= 0) { return 0; }
 	if (config->near_plane <= 0.0f || config->far_plane <= config->near_plane) { return 0; }
 	if (config->affine_strength < 0.0f || config->affine_strength > 1.0f) { return 0; }
@@ -303,6 +325,7 @@ static int config_validate(const render_config_t* config) {
 	if (config->texture_vram_limit < 0) { return 0; }
 	if (config->max_frames < 0) { return 0; }
 	if (!config->scene_path[0]) { return 0; }
+	if (strcmp(config->mode, "game") != 0 && strcmp(config->mode, "editor") != 0) { return 0; }
 
 	for (int i = 0; i < 3; i++) {
 		if (config->fog_color_rgb[i] < 0 || config->fog_color_rgb[i] > 255) { return 0; }
@@ -319,6 +342,8 @@ void render_config_init(render_config_t* config) {
 
 	config->width = 320;
 	config->height = 240;
+	config->window_width = 1280;
+	config->window_height = 720;
 	config->snap_grid_width = 320;
 	config->snap_grid_height = 240;
 	config->near_plane = 0.1f;
@@ -356,10 +381,13 @@ void render_config_init(render_config_t* config) {
 	config->xray_enabled = 0;
 	config->hud_enabled = 0;
 	config->hud_debug_enabled = 0;
+	config->editor_enabled = 0;
 	config->max_frames = 0;
 	config->log_level = NB_LOG_INFO;
 	config->log_file[0] = '\0';
 	snprintf(config->scene_path, sizeof(config->scene_path), "%s", "examples/kula/scenes/level01.tscn");
+	snprintf(config->project_name, sizeof(config->project_name), "%s", "Nodebench Project");
+	snprintf(config->mode, sizeof(config->mode), "%s", "game");
 	config->key_binding_count = 0;
 }
 
@@ -471,6 +499,27 @@ int config_apply_cli(render_config_t* config, int argc, char** argv) {
 
 		const char* equals = strchr(argv[i], '=');
 		if (!equals) {
+			if (i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0) {
+				char key[128];
+				char value[256];
+				snprintf(key, sizeof(key), "%s", argv[i] + 2);
+				snprintf(value, sizeof(value), "%s", argv[i + 1]);
+				char* clean_key = trim(key);
+				char* clean_value = trim(value);
+				if (strncmp(clean_key, "bind_", 5) == 0) {
+					const char* action = clean_key + 5;
+					if (!*action) { fprintf(stderr, "invalid option: %s\n", argv[i]); return 0; }
+					config_add_binding(config, action, clean_value);
+					i++;
+					continue;
+				}
+				if (!config_set_value(config, clean_key, clean_value)) {
+					fprintf(stderr, "invalid option: %s\n", argv[i]);
+					return 0;
+				}
+				i++;
+				continue;
+			}
 			fprintf(stderr, "expected --key=value, got: %s\n", argv[i]);
 			return 0;
 		}
@@ -518,7 +567,7 @@ void config_print_usage(const char* program) {
 
 	fprintf(stdout, "usage: %s [--config=path] [--key=value]\n", program);
 	fprintf(stdout, "keys:\n");
-	fprintf(stdout, "  virtual_resolution=320x240 vertex_snap_grid=320x240\n");
+	fprintf(stdout, "  virtual_resolution=320x240 window_resolution=1280x720 vertex_snap_grid=320x240\n");
 	fprintf(stdout, "  affine_strength=0..1 color_depth=15 dithering=0|1\n");
 	fprintf(stdout, "  fog_enabled=0|1 fog_range=8,25 fog_color=8,14,28\n");
 	fprintf(stdout, "  sky_top=6,10,22 sky_bottom=18,26,44\n");
@@ -527,8 +576,8 @@ void config_print_usage(const char* program) {
 	fprintf(stdout, "  blend_mode=none|alpha50|add|subtract|addquarter shade_mode=flat|gouraud\n");
 	fprintf(stdout, "  light_direction=0.4,0.7,1.0 light_color=1,1,1 texture_vram_limit=1048576\n");
 	fprintf(stdout, "  wireframe_enabled=0|1 xray_enabled=0|1\n");
-	fprintf(stdout, "  hud_enabled=0|1 hud_debug_enabled=0|1 max_frames=0\n");
-	fprintf(stdout, "  scene_path=examples/kula/scenes/level01.tscn\n");
+	fprintf(stdout, "  hud_enabled=0|1 hud_debug_enabled=0|1 editor_enabled=0|1 max_frames=0\n");
+	fprintf(stdout, "  mode=game|editor project_name=name scene|scene_path=path\n");
 	fprintf(stdout, "  log_level=debug|info|warn|error log_file=path\n");
 	fprintf(stdout, "hotkeys: 1 affine, 2 dither, 3 fog, 4 cull, 5 near-clip\n");
 	fprintf(stdout, "  p pause, f1 debug, f2 wireframe, f3 xray, f4 overlay, h hud\n");

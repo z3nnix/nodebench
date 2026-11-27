@@ -22,7 +22,11 @@ int platform_init(platform_t* platform, const platform_desc_t* desc) {
 	platform->key_count = 0;
 	platform->mouse_dx = 0;
 	platform->mouse_dy = 0;
+	platform->mouse_x = 0;
+	platform->mouse_y = 0;
 	platform->mouse_captured = 0;
+	platform->mouse_capture_blocked = 0;
+	platform->mouse_buttons = 0;
 	memset(platform->down, 0, sizeof(platform->down));
 
 	if (platform->width <= 0 || platform->height <= 0) { return 0; }
@@ -34,9 +38,8 @@ int platform_init(platform_t* platform, const platform_desc_t* desc) {
 
 	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
 
-	int window_scale = desc->window_scale > 0 ? desc->window_scale : 1;
-	int window_width = platform->width * window_scale;
-	int window_height = platform->height * window_scale;
+	int window_width = desc->window_width > 0 ? desc->window_width : platform->width;
+	int window_height = desc->window_height > 0 ? desc->window_height : platform->height;
 
 	Uint32 window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
 	if (desc->fullscreen) { window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP; }
@@ -88,12 +91,15 @@ void platform_shutdown(platform_t* platform) {
 	platform->key_count = 0;
 	platform->mouse_dx = 0;
 	platform->mouse_dy = 0;
+	platform->mouse_x = 0;
+	platform->mouse_y = 0;
+	platform->mouse_capture_blocked = 0;
 	memset(platform->down, 0, sizeof(platform->down));
 
 	SDL_Quit();
 }
 
-void platform_pump_events(platform_t* platform, int* should_quit) {
+void platform_pump_events(platform_t* platform, int* should_quit, platform_event_fn event_handler, void* event_user) {
 	if (!platform || !should_quit) { return; }
 
 	platform->mouse_dx = 0;
@@ -102,6 +108,10 @@ void platform_pump_events(platform_t* platform, int* should_quit) {
 	SDL_Event event;
 
 	while (SDL_PollEvent(&event)) {
+		if (event_handler) {
+			event_handler(event_user, &event);
+		}
+
 		if (event.type == SDL_QUIT) { *should_quit = 1; }
 
 		if (event.type == SDL_KEYDOWN) {
@@ -121,14 +131,23 @@ void platform_pump_events(platform_t* platform, int* should_quit) {
 		if (event.type == SDL_MOUSEMOTION) {
 			platform->mouse_dx += event.motion.xrel;
 			platform->mouse_dy += event.motion.yrel;
+			platform->mouse_x = event.motion.x;
+			platform->mouse_y = event.motion.y;
 		}
 
-		if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
-			if (!platform->mouse_captured) { platform_set_mouse_capture(platform, 1); }
+		if (event.type == SDL_MOUSEBUTTONDOWN) {
+			platform->mouse_buttons |= SDL_BUTTON(event.button.button);
+			if (event.button.button == SDL_BUTTON_LEFT) {
+				if (!platform->mouse_captured && !platform->mouse_capture_blocked) { platform_set_mouse_capture(platform, 1); }
+			}
+		}
+
+		if (event.type == SDL_MOUSEBUTTONUP) {
+			platform->mouse_buttons &= ~SDL_BUTTON(event.button.button);
 		}
 
 		if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-			if (platform->mouse_captured) { platform_set_mouse_capture(platform, 1); }
+			if (platform->mouse_captured && !platform->mouse_capture_blocked) { platform_set_mouse_capture(platform, 1); }
 		}
 	}
 }
@@ -163,6 +182,7 @@ void platform_mouse_delta(platform_t* platform, int* dx, int* dy) {
 void platform_set_mouse_capture(platform_t* platform, int captured) {
 	if (!platform) { return; }
 
+	if (captured && platform->mouse_capture_blocked) { return; }
 	platform->mouse_captured = captured ? 1 : 0;
 	if (!platform->window) { return; }
 
@@ -172,6 +192,15 @@ void platform_set_mouse_capture(platform_t* platform, int captured) {
 
 int platform_mouse_capture(const platform_t* platform) {
 	return platform && platform->mouse_captured;
+}
+
+void platform_set_mouse_capture_blocked(platform_t* platform, int blocked) {
+	if (!platform) { return; }
+
+	platform->mouse_capture_blocked = blocked ? 1 : 0;
+	if (platform->mouse_capture_blocked && platform->mouse_captured) {
+		platform_set_mouse_capture(platform, 0);
+	}
 }
 
 float platform_delta_time(platform_t* platform) {
@@ -188,34 +217,70 @@ float platform_delta_time(platform_t* platform) {
 	return dt;
 }
 
-void platform_present(platform_t* platform) {
-	if (!platform || !platform->renderer || !platform->texture || !platform->pixels) { return; }
+void platform_present_framebuffer(platform_t* platform) {
+	if (!platform) { return; }
 
 	int output_width = 0;
 	int output_height = 0;
-
-	SDL_GetRendererOutputSize((SDL_Renderer*)platform->renderer, &output_width, &output_height);
+	platform_output_size(platform, &output_width, &output_height);
 	if (output_width <= 0 || output_height <= 0) { return; }
 
 	float scale_x = (float)output_width / (float)platform->width;
 	float scale_y = (float)output_height / (float)platform->height;
 	float scale = scale_x < scale_y ? scale_x : scale_y;
+	int w = (int)((float)platform->width * scale);
+	int h = (int)((float)platform->height * scale);
+	int x = (output_width - w) / 2;
+	int y = (output_height - h) / 2;
+	platform_present_framebuffer_rect(platform, x, y, w, h);
+}
+
+void platform_present_framebuffer_rect(platform_t* platform, int x, int y, int w, int h) {
+	if (!platform || !platform->renderer || !platform->texture || !platform->pixels) { return; }
+	if (w <= 0 || h <= 0) { return; }
 
 	SDL_Rect destination;
-	destination.w = (int)((float)platform->width * scale);
-	destination.h = (int)((float)platform->height * scale);
-	destination.x = (output_width - destination.w) / 2;
-	destination.y = (output_height - destination.h) / 2;
+	destination.x = x;
+	destination.y = y;
+	destination.w = w;
+	destination.h = h;
 
 	SDL_UpdateTexture((SDL_Texture*)platform->texture, NULL, platform->pixels, (int)((size_t)platform->width * sizeof(uint32_t)));
-	SDL_RenderClear((SDL_Renderer*)platform->renderer);
 	SDL_RenderCopy((SDL_Renderer*)platform->renderer, (SDL_Texture*)platform->texture, NULL, &destination);
+}
+
+void platform_present(platform_t* platform) {
+	if (!platform || !platform->renderer) { return; }
+
+	platform_present_framebuffer(platform);
 	SDL_RenderPresent((SDL_Renderer*)platform->renderer);
 }
 
 uint32_t* platform_pixels(platform_t* platform) {
 	if (!platform) { return NULL; }
 	return platform->pixels;
+}
+
+void platform_output_size(const platform_t* platform, int* width, int* height) {
+	if (width) { *width = 0; }
+	if (height) { *height = 0; }
+	if (!platform || !platform->renderer) { return; }
+	SDL_GetRendererOutputSize((SDL_Renderer*)platform->renderer, width, height);
+}
+
+int platform_mouse_buttons(const platform_t* platform) {
+	if (!platform) { return 0; }
+	return (int)platform->mouse_buttons;
+}
+
+void* platform_window(const platform_t* platform) {
+	if (!platform) { return NULL; }
+	return platform->window;
+}
+
+void* platform_renderer(const platform_t* platform) {
+	if (!platform) { return NULL; }
+	return platform->renderer;
 }
 
 int platform_scancode_from_name(const char* name) {

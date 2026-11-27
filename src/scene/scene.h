@@ -120,6 +120,8 @@ entity_id_t scene_find_node(scene_t* scene, const char* name);
 entity_id_t scene_find_node_path(scene_t* scene, const char* path);
 int scene_set_node_name(scene_t* scene, entity_id_t id, const char* name);
 int scene_set_node_parent(scene_t* scene, entity_id_t id, entity_id_t parent);
+int scene_is_ancestor(scene_t* scene, entity_id_t ancestor, entity_id_t id);
+int scene_move_node(scene_t* scene, entity_id_t id, entity_id_t parent, int index);
 int scene_set_node_visible(scene_t* scene, entity_id_t id, int visible);
 int scene_node_visible(scene_t* scene, entity_id_t id);
 int scene_set_node_tint(scene_t* scene, entity_id_t id, vec3_t tint);
@@ -132,6 +134,8 @@ int scene_add_camera(scene_t* scene, entity_id_t id, camera_t camera);
 int scene_add_light(scene_t* scene, entity_id_t id, light_t light);
 int scene_add_collider(scene_t* scene, entity_id_t id, collider_t collider);
 int scene_add_script(scene_t* scene, entity_id_t id, script_id script, const char* module);
+int scene_remove_entity(scene_t* scene, entity_id_t id);
+int scene_duplicate_entity(scene_t* scene, entity_id_t id);
 int scene_set_active_camera(scene_t* scene, entity_id_t id);
 
 transform_t* scene_get_transform(scene_t* scene, entity_id_t id);

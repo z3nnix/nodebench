@@ -6,26 +6,18 @@
 #include "core/input.h"
 #include "core/log.h"
 #include "core/platform.h"
+#include "editor/editor.h"
 #include "physics/collision.h"
 #include "render/framebuffer.h"
 #include "render/renderer.h"
 #include "resource/resource.h"
 #include "script/wren_vm.h"
 #include "scene/scene.h"
+#include "scene/scene_doc.h"
 #include "ui/hud.h"
+#include "core/result.h"
 
 #define NB_ENGINE_FIXED_STEP 0.016666667f
-
-typedef enum {
-	NB_RESULT_OK = 0,
-	NB_RESULT_HELP,
-	NB_RESULT_ERROR_INVALID_ARGUMENT,
-	NB_RESULT_ERROR_CONFIG,
-	NB_RESULT_ERROR_PLATFORM,
-	NB_RESULT_ERROR_RENDERER,
-	NB_RESULT_ERROR_RESOURCE,
-	NB_RESULT_ERROR_SCENE
-} nb_result_t;
 
 typedef struct engine_t engine_t;
 
@@ -62,9 +54,12 @@ typedef struct engine_t {
 	collision_state_t collisions;
 	engine_scene_t scene;
 	scene_t* scene_graph;
+	scene_t owned_scene;
+	scene_doc_t scene_doc;
 	input_state_t input;
 	engine_clock_t clock;
 	hud_t hud;
+	editor_t editor;
 	log_t log;
 	int script_vm_ready;
 	int audio_ready;
@@ -74,6 +69,7 @@ typedef struct engine_t {
 	int renderer_ready;
 	int resources_ready;
 	int scene_ready;
+	int editor_ready;
 } engine_t;
 
 const char* nb_error_string(nb_result_t result);

@@ -1,8 +1,10 @@
+#include <SDL2/SDL.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "core/engine.h"
+#include "editor/editor_app.h"
 #include "scene/demo.h"
 
 const char* nb_error_string(nb_result_t result) {
@@ -50,7 +52,15 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	hud_init(&engine->hud);
 	input_init(&engine->input, &engine->config);
 
-	platform_desc_t platform_desc = { "NodeBench", engine->config.width, engine->config.height, 3, 0 };
+	platform_desc_t platform_desc = { "NodeBench", engine->config.width, engine->config.height, engine->config.window_width, engine->config.window_height, 0 };
+	if (strcmp(engine->config.mode, "editor") == 0) {
+		if (platform_desc.window_width < 1280) { platform_desc.window_width = 1280; }
+		if (platform_desc.window_height < 720) { platform_desc.window_height = 720; }
+	}
+	else {
+		if (platform_desc.window_width <= 0) { platform_desc.window_width = engine->config.width * 3; }
+		if (platform_desc.window_height <= 0) { platform_desc.window_height = engine->config.height * 3; }
+	}
 	if (!platform_init(&engine->platform, &platform_desc)) { return NB_RESULT_ERROR_PLATFORM; }
 	engine->platform_ready = 1;
 
@@ -59,6 +69,14 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 
 	if (!renderer_init(&engine->renderer, &engine->framebuffer)) { return NB_RESULT_ERROR_RENDERER; }
 	engine->renderer_ready = 1;
+
+	if (!editor_init(&engine->editor, engine)) {
+		engine_log(engine, "editor unavailable");
+	}
+
+	else {
+		engine->editor_ready = 1;
+	}
 
 	resource_store_init(&engine->resources, engine->config.texture_vram_limit);
 	engine->resources_ready = 1;
@@ -110,6 +128,18 @@ static void engine_apply_actions(engine_t* engine) {
 	int changed = 0;
 
 	if (input_was_pressed(input, "quit")) { input->quit = 1; }
+
+	if (input_was_pressed(input, "editor_toggle") && engine->editor_ready) {
+		engine->editor.enabled = !engine->editor.enabled;
+		platform_set_mouse_capture_blocked(&engine->platform, engine->editor.enabled);
+		if (engine->editor.enabled) {
+			platform_set_mouse_capture(&engine->platform, 0);
+		}
+		else {
+			platform_set_mouse_capture(&engine->platform, 1);
+		}
+		changed = 1;
+	}
 
 	if (input_was_pressed(input, "pause")) {
 		engine->paused = !engine->paused;
@@ -215,7 +245,17 @@ void engine_render(engine_t* engine, float alpha) {
 
 	uint32_t* output = platform_pixels(&engine->platform);
 	framebuffer_resolve(&engine->framebuffer, output);
-	platform_present(&engine->platform);
+	SDL_Renderer* sdl_renderer = (SDL_Renderer*)platform_renderer(&engine->platform);
+	SDL_SetRenderDrawColor(sdl_renderer, 24, 24, 28, 255);
+	SDL_RenderClear(sdl_renderer);
+	if (engine->editor_ready && editor_enabled(&engine->editor)) {
+		platform_present_framebuffer_rect(&engine->platform, engine->editor.viewport_x, engine->editor.viewport_y, engine->editor.viewport_w, engine->editor.viewport_h);
+		editor_render(&engine->editor, engine);
+	}
+	else {
+		platform_present_framebuffer(&engine->platform);
+	}
+	SDL_RenderPresent(sdl_renderer);
 }
 
 void engine_shutdown(engine_t* engine) {
@@ -223,6 +263,7 @@ void engine_shutdown(engine_t* engine) {
 
 	if (engine->script_vm_ready) { wren_vm_shutdown(&engine->script_vm); }
 	engine->script_vm_ready = 0;
+	scene_doc_clear(&engine->scene_doc);
 
 	if (engine->scene_ready && engine->scene.shutdown) { engine->scene.shutdown(engine, engine->scene.context); }
 	engine->scene_graph = NULL;
@@ -230,11 +271,13 @@ void engine_shutdown(engine_t* engine) {
 	if (engine->audio_ready) { audio_shutdown(&engine->audio); }
 	engine->audio_ready = 0;
 
+	if (engine->editor_ready) { editor_shutdown(&engine->editor, engine); }
 	if (engine->renderer_ready) { renderer_shutdown(&engine->renderer); }
 	if (engine->framebuffer_ready) { framebuffer_shutdown(&engine->framebuffer); }
 	if (engine->platform_ready) { platform_shutdown(&engine->platform); }
 	if (engine->resources_ready) { resource_store_shutdown(&engine->resources); }
 
+	engine->editor_ready = 0;
 	engine->scene_ready = 0;
 	engine->resources_ready = 0;
 	engine->renderer_ready = 0;
@@ -252,7 +295,14 @@ nb_result_t engine_run(int argc, char** argv) {
 		return result;
 	}
 
-	demo_scene_register(&engine);
+	engine_log(&engine, "mode=%s scene=%s", engine.config.mode, engine.config.scene_path);
+	if (strcmp(engine.config.mode, "editor") == 0) {
+		engine.config.editor_enabled = 1;
+		editor_app_register(&engine);
+	}
+	else {
+		demo_scene_register(&engine);
+	}
 	if (!engine.scene.init) {
 		engine_log(&engine, "scene is not registered");
 		engine_shutdown(&engine);
@@ -274,9 +324,15 @@ nb_result_t engine_run(int argc, char** argv) {
 		float dt = platform_delta_time(&engine.platform);
 		if (dt > 0.25f) { dt = 0.25f; }
 
-		platform_pump_events(&engine.platform, &engine.input.quit);
+		if (engine.editor_ready && editor_enabled(&engine.editor)) {
+			editor_begin_frame(&engine.editor, &engine);
+		}
+		platform_pump_events(&engine.platform, &engine.input.quit, engine.editor_ready ? (platform_event_fn)editor_handle_event : NULL, &engine.editor);
 		input_update(&engine.input, &engine.platform);
 		if (engine.input.quit) { break; }
+		if (engine.editor_ready && editor_enabled(&engine.editor)) {
+			editor_update(&engine.editor, &engine);
+		}
 
 		engine.clock.elapsed += dt;
 		engine.clock.accumulator += dt;

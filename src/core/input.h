@@ -16,6 +16,8 @@ typedef struct {
 	int count;
 	int mouse_dx;
 	int mouse_dy;
+	int mouse_x;
+	int mouse_y;
 	int quit;
 	int key_to_action[NB_PLATFORM_SCANCODE_COUNT];
 } input_state_t;

@@ -25,9 +25,14 @@ typedef struct {
 	char keys[NB_CONFIG_BINDING_KEYS_MAX];
 } nb_key_binding_t;
 
+#define NB_CONFIG_MODE_MAX 16
+#define NB_CONFIG_PROJECT_NAME_MAX 128
+
 typedef struct {
 	int width;
 	int height;
+	int window_width;
+	int window_height;
 	int snap_grid_width;
 	int snap_grid_height;
 	float near_plane;
@@ -55,10 +60,13 @@ typedef struct {
 	int xray_enabled;
 	int hud_enabled;
 	int hud_debug_enabled;
+	int editor_enabled;
 	int max_frames;
 	nb_log_level_t log_level;
 	char log_file[256];
 	char scene_path[256];
+	char project_name[NB_CONFIG_PROJECT_NAME_MAX];
+	char mode[NB_CONFIG_MODE_MAX];
 	nb_key_binding_t key_bindings[NB_CONFIG_BINDINGS_MAX];
 	int key_binding_count;
 } render_config_t;
