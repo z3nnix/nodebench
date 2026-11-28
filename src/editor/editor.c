@@ -15,6 +15,8 @@
 #include <unistd.h>
 
 #include "editor/editor.h"
+#define NB_EDITOR_ASSETS_INCLUDE_FONTS
+#include "editor_assets.h"
 #include "asset/asset_db.h"
 #include "audio/audio.h"
 #include "core/dynamic_array.h"
@@ -1109,7 +1111,13 @@ static int editor_scene_set_ext(editor_t* editor, engine_t* engine, nb_resource_
 	}
 	if (!ext) { return 0; }
 	if (out_handle) { *out_handle = ext->handle; }
-	const char* uuid = source_path ? asset_db_uuid(&engine->assets, source_path) : NULL;
+	const char* uuid = NULL;
+	if (source_path) {
+		char uuid_path[NB_EDITOR_FS_PATH_MAX];
+		if (editor_asset_logical_path(editor, source_path, uuid_path, sizeof(uuid_path))) {
+			uuid = asset_db_uuid(&engine->assets, uuid_path);
+		}
+	}
 	if (uuid && uuid[0]) { snprintf(ext->uuid, sizeof(ext->uuid), "%s", uuid); }
 	return 1;
 }
@@ -1219,7 +1227,7 @@ static int editor_assign_asset(editor_t* editor, engine_t* engine, node_t* node,
 	uuid[0] = '\0';
 	if (engine->assets.ready) {
 		asset_db_ensure_meta(&engine->assets, abs, uuid, sizeof(uuid));
-		asset_db_import(&engine->assets, abs);
+		asset_db_import(&engine->assets, logical);
 	}
 	if (kind == NB_EDITOR_PICKER_MESH) {
 		mesh_id handle = editor_scene_ext_handle(&engine->scene_doc, NB_RESOURCE_KIND_MESH, logical);
@@ -1474,14 +1482,22 @@ static int editor_save_scene(editor_t* editor, engine_t* engine) {
 		engine_log(engine, "save failed: doc='%s' cfg='%s' ed='%s'", engine->scene_doc.path, engine->config.scene_path, editor->scene_path);
 		return 0;
 	}
-	if (!engine->scene_doc.path[0]) {
-		snprintf(engine->scene_doc.path, sizeof(engine->scene_doc.path), "%s", path);
+	char logical[NB_EDITOR_FS_PATH_MAX];
+	if (!editor_asset_logical_path(editor, path, logical, sizeof(logical))) {
+		editor_set_status(editor, "scene save failed: path");
+		return 0;
 	}
-	nb_result_t result = scene_doc_save(&engine->scene_doc, path, engine, engine->scene_graph);
+	char absolute[NB_EDITOR_FS_PATH_MAX];
+	if (!editor_asset_abs_path(engine, logical, absolute, sizeof(absolute))) {
+		editor_set_status(editor, "scene save failed: path");
+		return 0;
+	}
+	snprintf(engine->scene_doc.path, sizeof(engine->scene_doc.path), "%.*s", (int)sizeof(engine->scene_doc.path) - 1, logical);
+	nb_result_t result = scene_doc_save(&engine->scene_doc, absolute, engine, engine->scene_graph);
 	if (result == NB_RESULT_OK) {
-		const char* saved = engine->scene_doc.path[0] ? engine->scene_doc.path : path;
-		snprintf(engine->config.scene_path, sizeof(engine->config.scene_path), "%s", saved);
-		snprintf(editor->scene_path, sizeof(editor->scene_path), "%s", saved);
+		snprintf(engine->scene_doc.path, sizeof(engine->scene_doc.path), "%.*s", (int)sizeof(engine->scene_doc.path) - 1, logical);
+		snprintf(engine->config.scene_path, sizeof(engine->config.scene_path), "%.*s", (int)sizeof(engine->config.scene_path) - 1, logical);
+		snprintf(editor->scene_path, sizeof(editor->scene_path), "%.*s", (int)sizeof(editor->scene_path) - 1, logical);
 		editor->last_save_time = editor_now_seconds();
 		editor_set_status(editor, "scene saved");
 		return 1;
@@ -1574,6 +1590,12 @@ static void editor_scene_state_reset(editor_t* editor) {
 
 static void editor_open_scene_now(editor_t* editor, engine_t* engine, const char* path) {
 	if (!editor || !engine || !path || !*path) { return; }
+	char logical[NB_EDITOR_FS_PATH_MAX];
+	if (!editor_asset_logical_path(editor, path, logical, sizeof(logical))) {
+		editor_set_status(editor, "scene path failed");
+		return;
+	}
+	path = logical;
 	int existing = editor_tab_find(editor, path);
 	int index = existing;
 	if (index < 0) {
@@ -1600,7 +1622,7 @@ static void editor_open_scene_now(editor_t* editor, engine_t* engine, const char
 	editor_scene_state_reset(editor);
 	editor_tab_load(editor, &editor->tabs[index]);
 	editor_fix_selection(editor, engine);
-	snprintf(editor->scene_path, sizeof(editor->scene_path), "%s", path);
+	snprintf(editor->scene_path, sizeof(editor->scene_path), "%.*s", (int)sizeof(editor->scene_path) - 1, path);
 	editor_set_status(editor, "scene opened");
 }
 
@@ -1814,17 +1836,21 @@ static int editor_explorer_path_matches(const char* path, const char* prefix) {
 
 static void editor_explorer_after_path_change(editor_t* editor, engine_t* engine, const char* old_path, const char* new_path) {
 	if (!editor || !engine || !old_path || !new_path) { return; }
+	char old_logical[NB_EDITOR_FS_PATH_MAX];
+	char new_logical[NB_EDITOR_FS_PATH_MAX];
+	if (!editor_asset_logical_path(editor, old_path, old_logical, sizeof(old_logical))) { return; }
+	if (!editor_asset_logical_path(editor, new_path, new_logical, sizeof(new_logical))) { return; }
 	char old_prefix[NB_EDITOR_FS_PATH_MAX];
 	char new_prefix[NB_EDITOR_FS_PATH_MAX];
-	editor_fs_join_into(old_prefix, sizeof(old_prefix), old_path, "");
-	editor_fs_join_into(new_prefix, sizeof(new_prefix), new_path, "");
+	editor_fs_join_into(old_prefix, sizeof(old_prefix), old_logical, "");
+	editor_fs_join_into(new_prefix, sizeof(new_prefix), new_logical, "");
 	int active_changed = 0;
 	for (int i = 0; i < editor->tab_count; i++) {
 		editor_scene_tab_t* tab = &editor->tabs[i];
 		int affected = 0;
 		char updated[NB_EDITOR_FS_PATH_MAX];
-		if (strcmp(tab->path, old_path) == 0) {
-			snprintf(updated, sizeof(updated), "%.*s", (int)sizeof(updated) - 1, new_path);
+		if (strcmp(tab->path, old_logical) == 0) {
+			snprintf(updated, sizeof(updated), "%.*s", (int)sizeof(updated) - 1, new_logical);
 			affected = 1;
 		}
 		else if (strncmp(tab->path, old_prefix, strlen(old_prefix)) == 0) {
@@ -2959,23 +2985,6 @@ static void editor_run_scene(editor_t* editor, engine_t* engine) {
 	}
 }
 
-static int editor_font_path(char* out, size_t size, const char* root, const char* name) {
-	size_t root_len = root ? strlen(root) : 0;
-	while (root_len > 0 && root[root_len - 1] == '/') { root_len--; }
-	if (root_len > 0) {
-		snprintf(out, size, "%.*s/assets/fonts/%s", (int)root_len, root, name);
-		if (access(out, F_OK) == 0) { return 1; }
-	}
-	char* base = SDL_GetBasePath();
-	if (base) {
-		snprintf(out, size, "%s../assets/fonts/%s", base, name);
-		SDL_free(base);
-		if (access(out, F_OK) == 0) { return 1; }
-	}
-	snprintf(out, size, "assets/fonts/%s", name);
-	return access(out, F_OK) == 0;
-}
-
 int editor_init(editor_t* editor, engine_t* engine) {
 	if (!editor || !engine) { return 0; }
 
@@ -3052,22 +3061,12 @@ int editor_init(editor_t* editor, engine_t* engine) {
 	struct nk_font_config heading_cfg = nk_font_config(22.0f);
 	heading_cfg.oversample_h = 2;
 	heading_cfg.oversample_v = 2;
-	char font_path[PATH_MAX];
-	struct nk_font* base_font = NULL;
-	if (editor_font_path(font_path, sizeof(font_path), engine->config.project_root, "IBMPlexMono-Regular.ttf")) {
-		base_font = nk_font_atlas_add_from_file(atlas, font_path, 14.0f, &base_cfg);
-	}
+	struct nk_font* base_font = nk_font_atlas_add_from_memory(atlas, nb_font_ibm_plex_mono_regular_ttf, sizeof(nb_font_ibm_plex_mono_regular_ttf), 14.0f, &base_cfg);
 	if (!base_font) { base_font = nk_font_atlas_add_default(atlas, 14.0f, &base_cfg); }
 	if (base_font) { atlas->default_font = base_font; }
-	struct nk_font* semibold_font = NULL;
-	if (editor_font_path(font_path, sizeof(font_path), engine->config.project_root, "IBMPlexMono-SemiBold.ttf")) {
-		semibold_font = nk_font_atlas_add_from_file(atlas, font_path, 14.0f, &base_cfg);
-	}
+	struct nk_font* semibold_font = nk_font_atlas_add_from_memory(atlas, nb_font_ibm_plex_mono_semibold_ttf, sizeof(nb_font_ibm_plex_mono_semibold_ttf), 14.0f, &base_cfg);
 	if (!semibold_font) { semibold_font = base_font; }
-	struct nk_font* heading_font = NULL;
-	if (editor_font_path(font_path, sizeof(font_path), engine->config.project_root, "IBMPlexMono-SemiBold.ttf")) {
-		heading_font = nk_font_atlas_add_from_file(atlas, font_path, 22.0f, &heading_cfg);
-	}
+	struct nk_font* heading_font = nk_font_atlas_add_from_memory(atlas, nb_font_ibm_plex_mono_semibold_ttf, sizeof(nb_font_ibm_plex_mono_semibold_ttf), 22.0f, &heading_cfg);
 	if (!heading_font) { heading_font = semibold_font; }
 	editor->ui_font_base = base_font;
 	editor->ui_font_semibold = semibold_font;
@@ -3956,7 +3955,7 @@ static void editor_create_scene_instance(editor_t* editor, engine_t* engine, con
 
 	tscn_file_t file;
 	tscn_file_init(&file);
-	if (tscn_file_load(&file, path, engine) != NB_RESULT_OK) {
+	if (tscn_file_load(&file, logical, engine) != NB_RESULT_OK) {
 		editor_set_status(editor, "scene load failed");
 		tscn_file_free(&file);
 		return;
@@ -4520,9 +4519,9 @@ static int editor_apply_tres_asset(editor_t* editor, engine_t* engine, const cha
 	editor_tres_ext_t* ext = &state->ext[ext_index];
 	snprintf(ext->type, sizeof(ext->type), "%s", type);
 	snprintf(ext->path, sizeof(ext->path), "%.*s", (int)sizeof(ext->path) - 1, path);
-	char abs[NB_EDITOR_FS_PATH_MAX];
-	if (editor_asset_abs_path(engine, path, abs, sizeof(abs))) {
-		const char* uuid = asset_db_uuid(&engine->assets, abs);
+	char logical[NB_EDITOR_FS_PATH_MAX];
+	if (editor_asset_logical_path(editor, path, logical, sizeof(logical))) {
+		const char* uuid = asset_db_uuid(&engine->assets, logical);
 		if (uuid && uuid[0]) { snprintf(ext->uuid, sizeof(ext->uuid), "%.*s", (int)sizeof(ext->uuid) - 1, uuid); }
 	}
 	if (palette) {

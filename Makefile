@@ -1,7 +1,11 @@
 CC := cc
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -MMD -MP -I. -Isrc $(shell pkg-config --cflags sdl2)
+CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -MMD -MP -I. -Isrc -Ibuild/generated $(shell pkg-config --cflags sdl2)
 LDFLAGS := $(shell pkg-config --libs sdl2) -lm
 BUILD_DIR := build
+GENERATED_DIR := $(BUILD_DIR)/generated
+GENERATED_ASSET_HEADER := $(GENERATED_DIR)/editor_assets.h
+EMBED_SCRIPT := tools/embed_assets.py
+EMBED_ASSETS := assets/fonts/IBMPlexMono-Regular.ttf assets/fonts/IBMPlexMono-SemiBold.ttf $(wildcard assets/icons/*.svg)
 SRC := $(shell find src -type f -name '*.c' ! -path 'src/test/*')
 VENDOR_SRC := third_party/wren/wren.c
 OBJ := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SRC)) $(patsubst %.c,$(BUILD_DIR)/%.o,$(VENDOR_SRC))
@@ -104,6 +108,13 @@ $(RESOURCE_CREATE_TEST_TARGET): $(RESOURCE_CREATE_TEST_OBJ) $(RESOURCE_CREATE_TE
 
 $(LAUNCHER_TEST_TARGET): $(LAUNCHER_TEST_OBJ) $(LAUNCHER_TEST_LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(GENERATED_ASSET_HEADER): $(EMBED_SCRIPT) $(EMBED_ASSETS)
+	mkdir -p $(dir $@)
+	python3 $(EMBED_SCRIPT) $@
+
+$(BUILD_DIR)/editor/editor.o $(BUILD_DIR)/editor/editor_icons.o: $(GENERATED_ASSET_HEADER)
+$(BUILD_DIR)/test/test_editor_lifecycle.o: $(GENERATED_ASSET_HEADER)
 
 $(BUILD_DIR)/%.o: src/%.c
 	mkdir -p $(dir $@)

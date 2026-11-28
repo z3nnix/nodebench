@@ -10,7 +10,6 @@
 #include "asset/asset_db.h"
 #include "audio/audio.h"
 #include "core/dynamic_array.h"
-#include "core/file_io.h"
 #include "render/material.h"
 #include "render/primitives.h"
 #include "render/texture.h"
@@ -280,11 +279,7 @@ static int tscn_set_resource_path(char* out, size_t size, const char* relative) 
 
 static int tscn_read_asset(engine_t* engine, const char* path, unsigned char** data, size_t* size) {
 	const asset_db_t* db = engine ? &engine->assets : NULL;
-	if (asset_db_read_all(db, path, data, size)) {
-		return 1;
-	}
-
-	return nb_file_read_all(path, data, size);
+	return asset_db_read_all(db, path, data, size);
 }
 
 const tscn_ext_t* tscn_file_find_ext_by_id(const tscn_file_t* file, const char* id) {
@@ -812,25 +807,14 @@ nb_result_t tscn_file_load(tscn_file_t* file, const char* path, engine_t* engine
 		return NB_RESULT_ERROR_INVALID_ARGUMENT;
 	}
 
-	FILE* stream = fopen(path, "r");
-	if (!stream) {
+	unsigned char* data = NULL;
+	size_t size = 0;
+	if (!tscn_read_asset(engine, path, &data, &size)) {
 		return NB_RESULT_ERROR_RESOURCE;
 	}
 
-	nb_result_t result = tscn_parse_stream(stream, engine, file);
-	fclose(stream);
-
-	if (result == NB_RESULT_OK) {
-		result = tscn_ensure_node_materials(file, engine);
-	}
-
-	if (result == NB_RESULT_OK) {
-		result = tscn_file_resolve_refs(file, engine);
-	}
-
-	if (result != NB_RESULT_OK) {
-		tscn_file_free(file);
-	}
+	nb_result_t result = tscn_file_load_from_buffer(file, path, (const char*)data, size, engine);
+	free(data);
 
 	return result;
 }

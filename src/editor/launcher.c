@@ -33,6 +33,9 @@
 
 extern char** environ;
 
+static int launcher_logical_scene(const char* root, const char* scene, char* out, size_t size);
+static void launcher_scene_abs(const launcher_recent_t* entry, char* out, size_t size);
+
 typedef struct {
 	int w;
 	int h;
@@ -168,7 +171,9 @@ int launcher_recent_add(launcher_t* launcher, const launcher_recent_t* entry) {
 	}
 	else {
 		launcher_copy(normalized.name, sizeof(normalized.name), entry->name);
-		launcher_copy(normalized.scene, sizeof(normalized.scene), entry->scene);
+		if (!launcher_logical_scene(normalized.root, entry->scene, normalized.scene, sizeof(normalized.scene))) {
+			launcher_copy(normalized.scene, sizeof(normalized.scene), "res://scenes/main.tscn");
+		}
 		if (!normalized.name[0]) { launcher_basename(normalized.root, normalized.name, sizeof(normalized.name)); }
 	}
 	for (int i = 0; i < launcher->recent_count; i++) {
@@ -257,6 +262,41 @@ static void launcher_parse_ini(const char* path, char* name, size_t name_size, c
 	fclose(file);
 }
 
+static int launcher_logical_scene(const char* root, const char* scene, char* out, size_t size) {
+	if (!root || !scene || !out || !size) { return 0; }
+	const char* logical = scene;
+	if (strncmp(logical, "res://", 6) == 0) { logical += 6; }
+	if (!*logical) { return 0; }
+	if (logical[0] == '/') {
+		size_t root_len = strlen(root);
+		while (root_len > 0 && root[root_len - 1] == '/') { root_len--; }
+		if (root_len == 0 || strncmp(logical, root, root_len) != 0 || (logical[root_len] != '/' && logical[root_len] != '\0')) { return 0; }
+		logical += root_len;
+		while (*logical == '/') { logical++; }
+	}
+	const char* part = logical;
+	for (const char* p = logical;; p++) {
+		if (*p != '/' && *p != '\0') { continue; }
+		size_t len = (size_t)(p - part);
+		if (len == 0 || (len == 1 && part[0] == '.') || (len == 2 && part[0] == '.' && part[1] == '.')) { return 0; }
+		if (*p == '\0') { break; }
+		part = p + 1;
+	}
+	snprintf(out, size, "res://%.*s", (int)size - 7, logical);
+	return 1;
+}
+
+static void launcher_scene_abs(const launcher_recent_t* entry, char* out, size_t size) {
+	if (!entry || !out || !size) { return; }
+	const char* logical = entry->scene;
+	if (strncmp(logical, "res://", 6) == 0) { logical += 6; }
+	if (logical[0] == '/') {
+		launcher_copy(out, size, logical);
+		return;
+	}
+	launcher_join(out, size, entry->root, logical);
+}
+
 int launcher_project_info(const char* root, launcher_recent_t* out) {
 	if (!root || !out) { return 0; }
 	char abs[PATH_MAX];
@@ -270,23 +310,31 @@ int launcher_project_info(const char* root, launcher_recent_t* out) {
 	memset(scene, 0, sizeof(scene));
 	launcher_parse_ini(ini, name, sizeof(name), scene, sizeof(scene));
 	if (!scene[0]) { launcher_copy(scene, sizeof(scene), "scenes/main.tscn"); }
+	char logical[PATH_MAX];
+	if (!launcher_logical_scene(abs, scene, logical, sizeof(logical))) {
+		launcher_logical_scene(abs, "scenes/main.tscn", logical, sizeof(logical));
+	}
+	launcher_recent_t candidate;
+	memset(&candidate, 0, sizeof(candidate));
+	launcher_copy(candidate.root, sizeof(candidate.root), abs);
+	launcher_copy(candidate.scene, sizeof(candidate.scene), logical);
 	char scene_abs[PATH_MAX];
-	if (scene[0] == '/') { launcher_copy(scene_abs, sizeof(scene_abs), scene); }
-	else { launcher_join(scene_abs, sizeof(scene_abs), abs, scene); }
+	launcher_scene_abs(&candidate, scene_abs, sizeof(scene_abs));
 	if (access(scene_abs, F_OK) != 0) {
-		launcher_join(scene_abs, sizeof(scene_abs), abs, "scenes/main.tscn");
+		launcher_copy(candidate.scene, sizeof(candidate.scene), "res://scenes/main.tscn");
+		launcher_scene_abs(&candidate, scene_abs, sizeof(scene_abs));
 	}
 	memset(out, 0, sizeof(*out));
 	launcher_copy(out->root, sizeof(out->root), abs);
 	launcher_copy(out->name, sizeof(out->name), name[0] ? name : "project");
-	if (access(scene_abs, F_OK) == 0) { launcher_copy(out->scene, sizeof(out->scene), scene_abs); }
+	if (access(scene_abs, F_OK) == 0) { launcher_copy(out->scene, sizeof(out->scene), candidate.scene); }
 	return 1;
 }
 
 long long launcher_project_modified(const launcher_recent_t* entry) {
 	if (!entry) { return 0; }
 	char path[PATH_MAX];
-	if (entry->scene[0]) { launcher_copy(path, sizeof(path), entry->scene); }
+	if (entry->scene[0]) { launcher_scene_abs(entry, path, sizeof(path)); }
 	else { launcher_join(path, sizeof(path), entry->root, "project.ini"); }
 	struct stat st;
 	if (stat(path, &st) != 0) {
@@ -442,7 +490,7 @@ int launcher_create_project(const char* parent, const char* name, launcher_recen
 		memset(out, 0, sizeof(*out));
 		launcher_copy(out->name, sizeof(out->name), name);
 		launcher_copy(out->root, sizeof(out->root), root);
-		launcher_copy(out->scene, sizeof(out->scene), scene);
+		launcher_copy(out->scene, sizeof(out->scene), "res://scenes/main.tscn");
 	}
 	return 1;
 }

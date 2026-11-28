@@ -259,7 +259,7 @@ nb_result_t project_export(engine_t* engine) {
 
 	tscn_file_t scene_file;
 	tscn_file_init(&scene_file);
-	nb_result_t result = tscn_file_load(&scene_file, scene_path, engine);
+	nb_result_t result = tscn_file_load(&scene_file, engine->config.scene_path, engine);
 	tscn_file_free(&scene_file);
 	if (result != NB_RESULT_OK) { return NB_RESULT_ERROR_SCENE; }
 

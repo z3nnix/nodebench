@@ -59,7 +59,7 @@ static char* engine_absolute_cli_value(const char* cwd, const char* value) {
 }
 
 static int engine_is_path_key(const char* key) {
-	return strcmp(key, "scene") == 0 || strcmp(key, "scene_path") == 0 || strcmp(key, "project") == 0 || strcmp(key, "project_root") == 0 || strcmp(key, "root") == 0;
+	return strcmp(key, "project") == 0 || strcmp(key, "project_root") == 0 || strcmp(key, "root") == 0;
 }
 
 static void engine_prepare_cli_paths(int argc, char** argv, const char* cwd, char** args, char** owned, int owned_cap, int* owned_count) {

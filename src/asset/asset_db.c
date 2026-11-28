@@ -337,12 +337,6 @@ const char* asset_db_resolve(const asset_db_t* db, const char* path, char* out, 
 	}
 
 	if (path[0] == '/') {
-		if (access(path, F_OK) == 0) {
-			snprintf(out, size, "%s", path);
-
-			return out;
-		}
-
 		return NULL;
 	}
 
@@ -371,11 +365,11 @@ int asset_db_read_all(const asset_db_t* db, const char* path, unsigned char** ou
 	}
 
 	char resolved[NB_ASSET_DB_PATH_MAX];
-	if (asset_db_resolve(db, path, resolved, sizeof(resolved))) {
-		return nb_file_read_all(resolved, out, size);
+	if (!asset_db_resolve(db, path, resolved, sizeof(resolved))) {
+		return 0;
 	}
 
-	return nb_file_read_all(path, out, size);
+	return nb_file_read_all(resolved, out, size);
 }
 
 int asset_db_import(asset_db_t* db, const char* path) {

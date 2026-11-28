@@ -33,6 +33,12 @@ static void test_remove_tree(const char* path) {
 	rmdir(path);
 }
 
+static void test_scene_path(const launcher_recent_t* entry, char* out, size_t size) {
+	const char* logical = entry->scene;
+	if (strncmp(logical, "res://", 6) == 0) { logical += 6; }
+	snprintf(out, size, "%s/%s", entry->root, logical);
+}
+
 static int test_find_index(const launcher_t* launcher, const char* name) {
 	for (int i = 0; i < launcher->recent_count; i++) {
 		if (strcmp(launcher->recent[i].name, name) == 0) { return i; }
@@ -79,6 +85,8 @@ static void test_cli_detection(void) {
 	assert(strcmp(config.mode, "game") == 0);
 	assert(config_load_file(&config, ini) == 1);
 	assert(strcmp(config.mode, "launcher") == 0);
+	assert(config_load_buffer(&config, "scene_path=/tmp/absolute.tscn\n", strlen("scene_path=/tmp/absolute.tscn\n")) == 0);
+	assert(config_load_buffer(&config, "scene_path=res://scenes/main.tscn\n", strlen("scene_path=res://scenes/main.tscn\n")) == 1);
 	unlink(ini);
 }
 
@@ -90,7 +98,7 @@ static void test_recent_and_spawn(void) {
 	memset(&entry, 0, sizeof(entry));
 	assert(launcher_create_project(parent, "demo", &entry) == 1);
 	assert(entry.root[0] == '/');
-	assert(entry.scene[0] == '/');
+	assert(strncmp(entry.scene, "res://", 6) == 0);
 	assert(strstr(entry.scene, "main.tscn") != NULL);
 
 	launcher_t launcher;
@@ -113,7 +121,7 @@ static void test_recent_and_spawn(void) {
 	launcher_make_spawn_args(&args, &launcher.recent[0], 1);
 	assert(strcmp(args.argv[1], "--mode=editor") == 0);
 	assert(strncmp(args.argv[2], "--project=", 10) == 0);
-	assert(strncmp(args.argv[3], "--scene=", 8) == 0);
+	assert(strncmp(args.argv[3], "--scene=res://", 14) == 0);
 	assert(args.argv[4] == NULL);
 
 	launcher_make_spawn_args(&args, &launcher.recent[0], 0);
@@ -171,8 +179,12 @@ static void test_filter_sort_and_import(void) {
 	struct utimbuf new_time;
 	new_time.actime = 1000001000;
 	new_time.modtime = 1000001000;
-	assert(utime(launcher.recent[zeta_index].scene, &old_time) == 0);
-	assert(utime(launcher.recent[alpha_index].scene, &new_time) == 0);
+	char zeta_scene[PATH_MAX];
+	char alpha_scene[PATH_MAX];
+	test_scene_path(&launcher.recent[zeta_index], zeta_scene, sizeof(zeta_scene));
+	test_scene_path(&launcher.recent[alpha_index], alpha_scene, sizeof(alpha_scene));
+	assert(utime(zeta_scene, &old_time) == 0);
+	assert(utime(alpha_scene, &new_time) == 0);
 	launcher.sort_mode = NB_LAUNCHER_SORT_RECENT;
 	launcher_apply_filter(&launcher);
 	assert(launcher.filtered_count == 2);

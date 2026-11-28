@@ -1,5 +1,7 @@
 #include "editor/editor_icons.h"
 
+#include "editor_assets.h"
+
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -16,68 +18,12 @@
 #pragma GCC diagnostic pop
 #endif
 
-#define NB_EDITOR_ICON_PATH_MAX 512
-
-static const char* icon_files[NB_EDITOR_ICON_COUNT] = {
-	"Node3D.svg",
-	"Camera3D.svg",
-	"MeshInstance3D.svg",
-	"DirectionalLight3D.svg",
-	"CollisionShape3D.svg",
-	"Script.svg",
-	"AudioStreamPlayer3D.svg",
-	"PackedScene.svg",
-	"Folder.svg",
-	"File.svg",
-	"TextFile.svg",
-	"Object.svg",
-	"AudioStream.svg",
-	"Mesh.svg",
-	"Texture2D.svg",
-	"Plus.svg",
-	"Import.svg",
-	"Search.svg",
-	"Settings.svg",
-	"Play.svg",
-	"Edit.svg",
-	"Trash.svg",
-	"Tag.svg",
-	"ChevronDown.svg"
-};
-
-static int editor_icon_file_exists(const char* path) {
-	FILE* file = fopen(path, "rb");
-	if (!file) {
-		return 0;
-	}
-	fclose(file);
-	return 1;
-}
-
-static int editor_icon_path(char* out, size_t size, const char* root, const char* name) {
-	size_t root_len = root ? strlen(root) : 0;
-	while (root_len > 0 && root[root_len - 1] == '/') {
-		root_len--;
-	}
-	if (root_len > 0) {
-		snprintf(out, size, "%.*s/assets/icons/%s", (int)root_len, root, name);
-		if (editor_icon_file_exists(out)) { return 1; }
-	}
-	char* base = SDL_GetBasePath();
-	if (base) {
-		snprintf(out, size, "%s../assets/icons/%s", base, name);
-		SDL_free(base);
-		if (editor_icon_file_exists(out)) { return 1; }
-	}
-	snprintf(out, size, "assets/icons/%s", name);
-	return editor_icon_file_exists(out);
-}
-
 int editor_icons_load(void* renderer, const char* project_root, void** textures, int count, int size) {
 	SDL_Renderer* sdl_renderer = (SDL_Renderer*)renderer;
 	NSVGrasterizer* rasterizer = NULL;
 
-	if (!sdl_renderer || !textures || count != NB_EDITOR_ICON_COUNT || size <= 0 || size > 48) {
+	(void)project_root;
+	if (!sdl_renderer || !textures || count != NB_EDITOR_ICON_COUNT || count != NB_EDITOR_ICON_ASSET_COUNT || size <= 0 || size > 48) {
 		return 0;
 	}
 	for (int i = 0; i < count; i++) {
@@ -88,7 +34,7 @@ int editor_icons_load(void* renderer, const char* project_root, void** textures,
 		return 0;
 	}
 	for (int i = 0; i < count; i++) {
-		char path[NB_EDITOR_ICON_PATH_MAX];
+		char icon_text[1024];
 		unsigned char pixels[48 * 48 * 4];
 		NSVGimage* image = NULL;
 		SDL_Texture* texture = NULL;
@@ -98,10 +44,11 @@ int editor_icons_load(void* renderer, const char* project_root, void** textures,
 		float ty;
 
 		memset(pixels, 0, sizeof(pixels));
-		if (!editor_icon_path(path, sizeof(path), project_root, icon_files[i])) {
+		if (strlen(nb_editor_icon_data[i]) >= sizeof(icon_text)) {
 			goto fail;
 		}
-		image = nsvgParseFromFile(path, "px", 96.0f);
+		snprintf(icon_text, sizeof(icon_text), "%s", nb_editor_icon_data[i]);
+		image = nsvgParse(icon_text, "px", 96.0f);
 		if (!image) {
 			goto fail;
 		}

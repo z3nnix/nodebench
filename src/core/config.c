@@ -261,6 +261,23 @@ static int parse_bool(const char* text, int* out) {
 	return parse_int(text, out);
 }
 
+static int config_is_logical_path(const char* path) {
+	if (!path || !*path || path[0] == '/' || strchr(path, '\\')) { return 0; }
+	const char* part = path;
+	if (strncmp(part, "res://", 6) == 0) { part += 6; }
+	if (!*part || *part == '/') { return 0; }
+	for (const char* p = part;; p++) {
+		if (*p != '/' && *p != '\0') {
+			if (*p == ':') { return 0; }
+			continue;
+		}
+		size_t len = (size_t)(p - part);
+		if (len == 0 || (len == 1 && part[0] == '.') || (len == 2 && part[0] == '.' && part[1] == '.')) { return 0; }
+		if (*p == '\0') { return 1; }
+		part = p + 1;
+	}
+}
+
 static int parse_pair_ints(const char* text, char separator, int* first, int* second) {
 	if (!text || !first || !second || strlen(text) >= 128) { return 0; }
 
@@ -477,7 +494,7 @@ static int config_set_value(render_config_t* config, const char* key, const char
 	}
 
 	else if (strcmp(key, "scene_path") == 0 || strcmp(key, "scene") == 0) {
-		if (!value[0] || strlen(value) >= sizeof(config->scene_path)) { return 0; }
+		if (!config_is_logical_path(value) || strlen(value) >= sizeof(config->scene_path)) { return 0; }
 		snprintf(config->scene_path, sizeof(config->scene_path), "%s", value);
 		return 1;
 	}
@@ -523,7 +540,7 @@ static int config_validate(const render_config_t* config) {
 	if (config->subdivide_area_threshold < 0.0f) { return 0; }
 	if (config->texture_vram_limit < 0) { return 0; }
 	if (config->max_frames < 0) { return 0; }
-	if (strcmp(config->mode, "launcher") != 0 && !config->scene_path[0]) { return 0; }
+	if (strcmp(config->mode, "launcher") != 0 && !config_is_logical_path(config->scene_path)) { return 0; }
 	if (strcmp(config->mode, "game") != 0 && strcmp(config->mode, "editor") != 0 && strcmp(config->mode, "launcher") != 0 && strcmp(config->mode, "export") != 0) { return 0; }
 
 	for (int i = 0; i < 3; i++) {

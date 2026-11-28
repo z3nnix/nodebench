@@ -23,6 +23,13 @@ int main(void) {
 		return 1;
 	}
 
+	char absolute[NB_ASSET_DB_PATH_MAX];
+	if (!asset_db_resolve(&db, "res://models/cube.obj", absolute, sizeof(absolute))) { return 1; }
+	if (asset_db_resolve(&db, absolute, absolute, sizeof(absolute)) != NULL) { return 1; }
+	unsigned char* denied = NULL;
+	size_t denied_size = 0;
+	if (asset_db_read_all(&db, absolute, &denied, &denied_size)) { return 1; }
+
 	const char* uuid = asset_db_uuid(&db, "res://models/cube.obj");
 	if (!uuid || strlen(uuid) != NB_ASSET_DB_UUID_SIZE - 1) {
 		return 1;

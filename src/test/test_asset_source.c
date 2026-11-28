@@ -196,12 +196,17 @@ int main(void) {
 		}
 	}
 
+	char absolute_scene[PATH_MAX];
+	tscn_file_t scene_absolute;
+	tscn_file_init(&scene_absolute);
+	int absolute_rejected = !realpath("scenes/level01.tscn", absolute_scene) || tscn_file_load(&scene_absolute, absolute_scene, &engine) != NB_RESULT_OK;
+	tscn_file_free(&scene_absolute);
 	tscn_file_free(&scene_disk);
 	tscn_file_free(&scene_mem);
 	resource_store_shutdown(&engine.resources);
 	asset_db_shutdown(&engine.assets);
 	asset_db_shutdown(&db);
-	if (!scene_ok || chdir(cwd) != 0) {
+	if (!scene_ok || !absolute_rejected || chdir(cwd) != 0) {
 		return 1;
 	}
 

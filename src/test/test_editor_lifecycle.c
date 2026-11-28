@@ -7,6 +7,8 @@
 #include "asset/asset_db.h"
 #include "core/engine.h"
 #include "editor/editor_app.h"
+#define NB_EDITOR_ASSETS_INCLUDE_FONTS
+#include "editor_assets.h"
 #include "script/wren_vm.h"
 
 static const char* editor_probe_source =
@@ -31,6 +33,15 @@ static const char* editor_probe_source =
 	"}\n";
 
 int main(void) {
+	if (sizeof(nb_font_ibm_plex_mono_regular_ttf) < 1024 || sizeof(nb_font_ibm_plex_mono_semibold_ttf) < 1024) {
+		return 1;
+	}
+	for (int i = 0; i < NB_EDITOR_ICON_ASSET_COUNT; i++) {
+		if (!nb_editor_icon_data[i] || nb_editor_icon_data[i][0] != '<') {
+			return 1;
+		}
+	}
+
 	char cwd[PATH_MAX];
 	char root[PATH_MAX];
 	if (!getcwd(cwd, sizeof(cwd)) || !nb_fixture_create(root, sizeof(root)) || chdir(root) != 0) {
