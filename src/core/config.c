@@ -158,8 +158,15 @@ int config_cli_requests_launcher(int argc, char** argv) {
 	return mode && strcmp(mode, "launcher") == 0;
 }
 
+int config_cli_requests_export(int argc, char** argv) {
+	const char* mode = config_find_arg_value(argc, argv, "mode");
+	if (mode && strcmp(mode, "export") == 0) { return 1; }
+	return argc > 1 && argv && argv[1] && strcmp(argv[1], "export") == 0;
+}
+
 int config_cli_selects_session(int argc, char** argv) {
 	if (config_cli_requests_launcher(argc, argv)) { return 0; }
+	if (config_cli_requests_export(argc, argv)) { return 1; }
 	if (config_find_arg_value(argc, argv, "mode")) { return 1; }
 	const char* const keys[] = { "project", "project_root", "root", "scene", "scene_path" };
 	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
@@ -487,8 +494,14 @@ static int config_set_value(render_config_t* config, const char* key, const char
 		return 1;
 	}
 
+	else if (strcmp(key, "export_dir") == 0) {
+		if (!value[0] || strlen(value) >= sizeof(config->export_dir)) { return 0; }
+		snprintf(config->export_dir, sizeof(config->export_dir), "%s", value);
+		return 1;
+	}
+
 	else if (strcmp(key, "mode") == 0) {
-		if (strcmp(value, "game") != 0 && strcmp(value, "editor") != 0 && strcmp(value, "launcher") != 0) { return 0; }
+		if (strcmp(value, "game") != 0 && strcmp(value, "editor") != 0 && strcmp(value, "launcher") != 0 && strcmp(value, "export") != 0) { return 0; }
 		snprintf(config->mode, sizeof(config->mode), "%s", value);
 		config->editor_enabled = strcmp(value, "editor") == 0 ? 1 : 0;
 		return 1;
@@ -511,7 +524,7 @@ static int config_validate(const render_config_t* config) {
 	if (config->texture_vram_limit < 0) { return 0; }
 	if (config->max_frames < 0) { return 0; }
 	if (strcmp(config->mode, "launcher") != 0 && !config->scene_path[0]) { return 0; }
-	if (strcmp(config->mode, "game") != 0 && strcmp(config->mode, "editor") != 0 && strcmp(config->mode, "launcher") != 0) { return 0; }
+	if (strcmp(config->mode, "game") != 0 && strcmp(config->mode, "editor") != 0 && strcmp(config->mode, "launcher") != 0 && strcmp(config->mode, "export") != 0) { return 0; }
 
 	for (int i = 0; i < 3; i++) {
 		if (config->fog_color_rgb[i] < 0 || config->fog_color_rgb[i] > 255) { return 0; }
@@ -572,6 +585,7 @@ void render_config_init(render_config_t* config) {
 	config->log_level = NB_LOG_INFO;
 	config->log_file[0] = '\0';
 	config->project_root[0] = '\0';
+	snprintf(config->export_dir, sizeof(config->export_dir), "%s", "build/export");
 	config->scene_path[0] = '\0';
 	snprintf(config->project_name, sizeof(config->project_name), "%s", "Nodebench Project");
 	snprintf(config->mode, sizeof(config->mode), "%s", "game");
@@ -758,7 +772,7 @@ int config_apply_cli(render_config_t* config, int argc, char** argv) {
 void config_print_usage(const char* program) {
 	if (!program) { program = "nodebench"; }
 
-	fprintf(stdout, "usage: %s [--project=path] [--key=value]\n", program);
+	fprintf(stdout, "usage: %s export [output_dir] | %s [--project=path] [--key=value]\n", program, program);
 	fprintf(stdout, "keys:\n");
 	fprintf(stdout, "  virtual_resolution=320x240 window_resolution=1280x720 vertex_snap_grid=320x240\n");
 	fprintf(stdout, "  affine_strength=0..1 color_depth=15 dithering=0|1\n");
@@ -770,8 +784,8 @@ void config_print_usage(const char* program) {
 	fprintf(stdout, "  light_direction=0.4,0.7,1.0 light_color=1,1,1 texture_vram_limit=1048576\n");
 	fprintf(stdout, "  wireframe_enabled=0|1 xray_enabled=0|1\n");
 	fprintf(stdout, "  hud_enabled=0|1 hud_debug_enabled=0|1 editor_enabled=0|1 max_frames=0\n");
-	fprintf(stdout, "  mode=launcher|game|editor project_name=name project_root=path scene|scene_path=path\n");
-	fprintf(stdout, "  log_level=debug|info|warn|error log_file=path\n");
+	fprintf(stdout, "  mode=launcher|game|editor|export project_name=name project_root=path scene|scene_path=path\n");
+	fprintf(stdout, "  export_dir=path log_level=debug|info|warn|error log_file=path\n");
 	fprintf(stdout, "hotkeys: 1 affine, 2 dither, 3 fog, 4 cull, 5 near-clip\n");
 	fprintf(stdout, "  p pause, f1 debug, f2 wireframe, f3 xray, f4 overlay, h hud\n");
 	fprintf(stdout, "  tab camera mode\n");

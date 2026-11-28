@@ -10,6 +10,7 @@
 
 #include "core/engine.h"
 #include "editor/editor_app.h"
+#include "export/project_export.h"
 #include "scene/demo.h"
 
 const char* nb_error_string(nb_result_t result) {
@@ -132,12 +133,43 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 
 	char original_cwd[PATH_MAX];
 	if (!getcwd(original_cwd, sizeof(original_cwd))) { snprintf(original_cwd, sizeof(original_cwd), "."); }
-	char** args = (char**)malloc((size_t)(argc + 1) * sizeof(char*));
+	char** args = (char**)malloc((size_t)(argc + 3) * sizeof(char*));
 	char* owned[64];
 	int owned_count = 0;
 	if (args) {
+		for (int i = 0; i < argc; i++) { args[i] = argv[i]; }
 		args[argc] = NULL;
-		engine_prepare_cli_paths(argc, argv, original_cwd, args, owned, 64, &owned_count);
+
+		if (config_cli_requests_export(argc, argv)) {
+			int command_form = argc > 1 && argv[1] && strcmp(argv[1], "export") == 0;
+			const char* export_dir = argc > 2 && argv[2] && argv[2][0] != '-' ? argv[2] : "build/export";
+			char* mode_arg = (char*)malloc(16);
+			size_t dir_size = strlen("--export_dir=") + strlen(export_dir) + 1;
+			char* dir_arg = (char*)malloc(dir_size);
+			if (!mode_arg || !dir_arg || owned_count + 2 >= 64) {
+				free(mode_arg);
+				free(dir_arg);
+				for (int i = 0; i < owned_count; i++) { free(owned[i]); }
+				free(args);
+				return NB_RESULT_ERROR_CONFIG;
+			}
+
+			snprintf(mode_arg, 16, "--mode=export");
+			snprintf(dir_arg, dir_size, "--export_dir=%s", export_dir);
+			owned[owned_count++] = mode_arg;
+			owned[owned_count++] = dir_arg;
+
+			int out = 0;
+			args[out++] = argv[0];
+			args[out++] = mode_arg;
+			args[out++] = dir_arg;
+			int skip = command_form ? 3 : 2;
+			for (int i = skip; i < argc; i++) { args[out++] = argv[i]; }
+			args[out] = NULL;
+			argc = out;
+		}
+
+		engine_prepare_cli_paths(argc, args, original_cwd, args, owned, 64, &owned_count);
 	}
 	else { args = argv; }
 
@@ -188,6 +220,10 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 
 	else {
 		engine->assets_ready = 1;
+	}
+
+	if (strcmp(engine->config.mode, "export") == 0) {
+		return NB_RESULT_OK;
 	}
 
 	hud_init(&engine->hud);
@@ -463,6 +499,12 @@ nb_result_t engine_run(int argc, char** argv) {
 	}
 
 	engine_log(&engine, "mode=%s scene=%s", engine.config.mode, engine.config.scene_path);
+	if (strcmp(engine.config.mode, "export") == 0) {
+		result = project_export(&engine);
+		engine_shutdown(&engine);
+		return result;
+	}
+
 	if (!engine.launcher.active) {
 		if (strcmp(engine.config.mode, "editor") == 0) {
 			engine.config.editor_enabled = 1;

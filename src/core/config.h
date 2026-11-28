@@ -65,6 +65,7 @@ typedef struct {
 	nb_log_level_t log_level;
 	char log_file[256];
 	char project_root[256];
+	char export_dir[256];
 	char scene_path[256];
 	char project_name[NB_CONFIG_PROJECT_NAME_MAX];
 	char mode[NB_CONFIG_MODE_MAX];
@@ -75,6 +76,7 @@ typedef struct {
 void render_config_init(render_config_t* config);
 int config_cli_selects_session(int argc, char** argv);
 int config_cli_requests_launcher(int argc, char** argv);
+int config_cli_requests_export(int argc, char** argv);
 int config_resolve_project_root(int argc, char** argv, char* out, size_t size);
 int config_load_file(render_config_t* config, const char* path);
 int config_load_buffer(render_config_t* config, const char* data, size_t size);
