@@ -17,6 +17,7 @@
 #define NB_TEST_FIXTURE_MATERIAL_UUID "22222222-2222-4222-8222-222222222222"
 #define NB_TEST_FIXTURE_PLAYER_UUID "33333333-3333-4333-8333-333333333333"
 #define NB_TEST_FIXTURE_LEVEL_UUID "44444444-4444-4444-8444-444444444444"
+#define NB_TEST_FIXTURE_AUDIO_UUID "55555555-5555-4555-8555-555555555555"
 
 static void nb_fixture_remove_tree(const char* path) {
 	DIR* dir = opendir(path);
@@ -53,6 +54,20 @@ static int nb_fixture_write(const char* path, const char* text) {
 
 	size_t length = strlen(text);
 	int ok = fwrite(text, 1, length, file) == length;
+	if (fclose(file) != 0) {
+		ok = 0;
+	}
+
+	return ok;
+}
+
+static int nb_fixture_write_bytes(const char* path, const void* data, size_t size) {
+	FILE* file = fopen(path, "wb");
+	if (!file) {
+		return 0;
+	}
+
+	int ok = fwrite(data, 1, size, file) == size;
 	if (fclose(file) != 0) {
 		ok = 0;
 	}
@@ -130,6 +145,12 @@ static int nb_fixture_create(char* out, size_t size) {
 		"    super(id)\n"
 		"  }\n"
 		"}\n";
+	const unsigned char wav[48] = {
+		'R', 'I', 'F', 'F', 40, 0, 0, 0, 'W', 'A', 'V', 'E',
+		'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0,
+		0x22, 0x56, 0, 0, 0x44, 0xAC, 0, 0, 2, 0, 16, 0,
+		'd', 'a', 't', 'a', 4, 0, 0, 0, 0, 0, 0xE8, 0x03
+	};
 	const char* scene =
 		"[gd_scene load_steps=5 format=3]\n"
 		"\n"
@@ -201,6 +222,16 @@ static int nb_fixture_create(char* out, size_t size) {
 	}
 	snprintf(path, sizeof(path), "%s/scripts/game.wren.meta", root);
 	if (!nb_fixture_write(path, "uuid=" NB_TEST_FIXTURE_LEVEL_UUID "\n")) {
+		nb_fixture_remove_tree(root);
+		return 0;
+	}
+	snprintf(path, sizeof(path), "%s/assets/blip.wav", root);
+	if (!nb_fixture_write_bytes(path, wav, sizeof(wav))) {
+		nb_fixture_remove_tree(root);
+		return 0;
+	}
+	snprintf(path, sizeof(path), "%s/assets/blip.wav.meta", root);
+	if (!nb_fixture_write(path, "uuid=" NB_TEST_FIXTURE_AUDIO_UUID "\n")) {
 		nb_fixture_remove_tree(root);
 		return 0;
 	}

@@ -1,3 +1,5 @@
+#include "core/memstream.h"
+
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,16 +88,13 @@ static int obj_parse_face_token(char* token, int* position, int* uv, int positio
 	return 1;
 }
 
-int obj_load(const char* path, mesh_t* mesh) {
-	if (!path || !mesh) { return 0; }
+static int obj_load_stream(FILE* file, mesh_t* mesh) {
+	if (!file || !mesh) { return 0; }
 
 	mesh->vertices = NULL;
 	mesh->vertex_count = 0;
 	mesh->triangles = NULL;
 	mesh->triangle_count = 0;
-
-	FILE* file = fopen(path, "r");
-	if (!file) { return 0; }
 
 	obj_position_t* positions = NULL;
 	obj_uv_t* uvs = NULL;
@@ -223,7 +222,6 @@ int obj_load(const char* path, mesh_t* mesh) {
 	free(positions);
 	free(uvs);
 	free(faces);
-	fclose(file);
 
 	return 1;
 
@@ -231,7 +229,30 @@ fail:
 	free(positions);
 	free(uvs);
 	free(faces);
-	fclose(file);
 	mesh_destroy(mesh);
 	return 0;
+}
+
+int obj_load(const char* path, mesh_t* mesh) {
+	if (!path || !mesh) { return 0; }
+
+	FILE* file = fopen(path, "r");
+	if (!file) { return 0; }
+
+	int ok = obj_load_stream(file, mesh);
+	fclose(file);
+
+	return ok;
+}
+
+int obj_load_mem(const void* data, size_t size, mesh_t* mesh) {
+	if (!data || !mesh) { return 0; }
+
+	FILE* file = nb_memstream_open(data, size);
+	if (!file) { return 0; }
+
+	int ok = obj_load_stream(file, mesh);
+	fclose(file);
+
+	return ok;
 }

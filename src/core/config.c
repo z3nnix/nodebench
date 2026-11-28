@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "core/config.h"
+#include "core/file_io.h"
 
 static const unsigned char bayer_4x4[16] = {
 	0, 8, 2, 10,
@@ -577,12 +578,7 @@ void render_config_init(render_config_t* config) {
 	config->key_binding_count = 0;
 }
 
-int config_load_file(render_config_t* config, const char* path) {
-	if (!config || !path) { return 0; }
-
-	FILE* file = fopen(path, "r");
-	if (!file) { return 1; }
-
+static int config_load_stream(render_config_t* config, FILE* file, const char* label) {
 	char line[256];
 	int line_number = 0;
 	int in_input = 0;
@@ -611,8 +607,7 @@ int config_load_file(render_config_t* config, const char* path) {
 
 		if (in_input) {
 			if (strlen(key) >= NB_CONFIG_BINDING_NAME_MAX || strlen(value) >= NB_CONFIG_BINDING_KEYS_MAX) {
-				fprintf(stderr, "%s:%d: invalid input binding: %s\n", path, line_number, key);
-				fclose(file);
+				fprintf(stderr, "%s:%d: invalid input binding: %s\n", label, line_number, key);
 				return 0;
 			}
 			config_add_binding(config, key, value);
@@ -620,20 +615,49 @@ int config_load_file(render_config_t* config, const char* path) {
 		}
 
 		if (!config_set_value(config, key, value)) {
-			fprintf(stderr, "%s:%d: invalid key or value: %s\n", path, line_number, key);
-			fclose(file);
+			fprintf(stderr, "%s:%d: invalid key or value: %s\n", label, line_number, key);
 			return 0;
 		}
 	}
 
-	fclose(file);
-
 	if (!config_validate(config)) {
-		fprintf(stderr, "%s: invalid configuration\n", path);
+		fprintf(stderr, "%s: invalid configuration\n", label);
 		return 0;
 	}
 
 	return 1;
+}
+
+int config_load_file(render_config_t* config, const char* path) {
+	if (!config || !path) { return 0; }
+
+	unsigned char* data = NULL;
+	size_t size = 0;
+	if (!nb_file_read_all(path, &data, &size)) { return 1; }
+
+	FILE* file = fmemopen((void*)data, size, "r");
+	if (!file) {
+		free(data);
+		return 0;
+	}
+
+	int ok = config_load_stream(config, file, path);
+	fclose(file);
+	free(data);
+
+	return ok;
+}
+
+int config_load_buffer(render_config_t* config, const char* data, size_t size) {
+	if (!config || !data) { return 0; }
+
+	FILE* file = fmemopen((void*)data, size, "r");
+	if (!file) { return 0; }
+
+	int ok = config_load_stream(config, file, "<buffer>");
+	fclose(file);
+
+	return ok;
 }
 
 int config_apply_cli(render_config_t* config, int argc, char** argv) {

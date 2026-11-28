@@ -2,6 +2,7 @@
 #define NODEBENCH_AUDIO_AUDIO_H
 
 #include <SDL2/SDL.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "resource/resource_id.h"
@@ -39,6 +40,7 @@ typedef struct {
 typedef struct resource_store_t resource_store_t;
 
 int wav_load(const char* path, audio_stream_t* stream);
+int wav_load_mem(const void* data, size_t size, audio_stream_t* stream);
 void audio_stream_free(audio_stream_t* stream);
 
 int audio_init(audio_system_t* audio);

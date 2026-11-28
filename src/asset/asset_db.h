@@ -29,6 +29,7 @@ void asset_db_shutdown(asset_db_t* db);
 int asset_db_refresh(asset_db_t* db);
 int asset_db_import(asset_db_t* db, const char* path);
 const char* asset_db_resolve(const asset_db_t* db, const char* path, char* out, size_t size);
+int asset_db_read_all(const asset_db_t* db, const char* path, unsigned char** out, size_t* size);
 const char* asset_db_path_for_uuid(const asset_db_t* db, const char* uuid, char* out, size_t size);
 const char* asset_db_uuid(const asset_db_t* db, const char* path);
 int asset_db_ensure_meta(const asset_db_t* db, const char* path, char* uuid_out, size_t size);

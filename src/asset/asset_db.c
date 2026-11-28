@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "core/dynamic_array.h"
+#include "core/file_io.h"
 
 static int asset_db_join(char* out, size_t size, const char* a, const char* b) {
 	if (!out || size == 0 || !a || !b) {
@@ -362,6 +363,19 @@ const char* asset_db_resolve(const asset_db_t* db, const char* path, char* out, 
 	}
 
 	return NULL;
+}
+
+int asset_db_read_all(const asset_db_t* db, const char* path, unsigned char** out, size_t* size) {
+	if (!path || !out || !size) {
+		return 0;
+	}
+
+	char resolved[NB_ASSET_DB_PATH_MAX];
+	if (asset_db_resolve(db, path, resolved, sizeof(resolved))) {
+		return nb_file_read_all(resolved, out, size);
+	}
+
+	return nb_file_read_all(path, out, size);
 }
 
 int asset_db_import(asset_db_t* db, const char* path) {

@@ -1,3 +1,5 @@
+#include "core/memstream.h"
+
 #include "resource/loader_tres.h"
 
 #include <ctype.h>
@@ -5,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "asset/asset_db.h"
+#include "core/file_io.h"
 #include "resource/loader.h"
 
 #define NB_TRES_MAX_EXT_RESOURCES 64
@@ -152,47 +156,6 @@ static int tres_parse_floats(const char* value, const char* prefix, float* out, 
 	return count;
 }
 
-static const char* tres_resolve_path(const char* path) {
-	static char buffer[512];
-	FILE* file = NULL;
-
-	if (strncmp(path, "res://", 6) == 0) {
-		const char* relative = path + 6;
-
-		snprintf(buffer, sizeof(buffer), "%s", relative);
-		file = fopen(buffer, "r");
-		if (file) {
-			fclose(file);
-
-			return buffer;
-		}
-
-		snprintf(buffer, sizeof(buffer), "assets/%s", relative);
-		file = fopen(buffer, "r");
-		if (file) {
-			fclose(file);
-
-			return buffer;
-		}
-
-		buffer[0] = '\0';
-
-		return buffer;
-	}
-
-	snprintf(buffer, sizeof(buffer), "assets/%s", path);
-	file = fopen(buffer, "r");
-	if (file) {
-		fclose(file);
-
-		return buffer;
-	}
-
-	buffer[0] = '\0';
-
-	return buffer;
-}
-
 static nb_blend_mode_t tres_parse_blend_mode(const char* value) {
 	if (strcmp(value, "alpha_50") == 0) {
 		return NB_BLEND_ALPHA_50;
@@ -247,33 +210,46 @@ static tres_ext_resource_t* tres_find_ext(tres_ext_resource_t* resources, int co
 	return NULL;
 }
 
-static int tres_load_ext_resource(tres_ext_resource_t* resource) {
-	const char* path = tres_resolve_path(resource->path);
-	if (!path[0]) {
+static int tres_load_ext_resource(engine_t* engine, tres_ext_resource_t* resource) {
+	unsigned char* bytes = NULL;
+	size_t size = 0;
+	int loaded = 0;
+
+	if (engine) {
+		loaded = asset_db_read_all(&engine->assets, resource->path, &bytes, &size);
+	}
+
+	if (!loaded) {
+		loaded = nb_file_read_all(resource->path, &bytes, &size);
+	}
+
+	if (!loaded) {
 		return 0;
 	}
 
+	int ok = 0;
+
 	if (strcmp(resource->type, "Texture2D") == 0) {
-		if (!image_load(path, &resource->image)) {
-			return 0;
+		ok = image_load_mem(bytes, size, &resource->image);
+		if (ok) {
+			resource->has_image = 1;
 		}
-
-		resource->has_image = 1;
-
-		return 1;
 	}
 
-	if (strcmp(resource->type, "Palette") == 0 || strcmp(resource->type, "CLUT") == 0) {
-		if (!clut_load(path, &resource->palette)) {
-			return 0;
+	else if (strcmp(resource->type, "Palette") == 0 || strcmp(resource->type, "CLUT") == 0) {
+		ok = clut_load_mem(bytes, size, &resource->palette);
+		if (ok) {
+			resource->has_palette = 1;
 		}
-
-		resource->has_palette = 1;
-
-		return 1;
 	}
 
-	return 1;
+	else {
+		ok = 1;
+	}
+
+	free(bytes);
+
+	return ok;
 }
 
 static void tres_free_ext_resources(tres_ext_resource_t* resources, int count) {
@@ -288,16 +264,7 @@ static void tres_free_ext_resources(tres_ext_resource_t* resources, int count) {
 	}
 }
 
-material_id material_load_tres(engine_t* engine, const char* path) {
-	if (!engine || !path) {
-		return NB_RESOURCE_INVALID_ID;
-	}
-
-	FILE* file = fopen(path, "r");
-	if (!file) {
-		return NB_RESOURCE_INVALID_ID;
-	}
-
+static material_id tres_load_stream(engine_t* engine, FILE* file) {
 	tres_ext_resource_t ext_resources[NB_TRES_MAX_EXT_RESOURCES];
 	int ext_count = 0;
 	char texture_ref[64] = "";
@@ -339,7 +306,7 @@ material_id material_load_tres(engine_t* engine, const char* path) {
 				tres_header_value(text, "type", resource->type, sizeof(resource->type));
 				tres_header_value(text, "path", resource->path, sizeof(resource->path));
 
-				tres_load_ext_resource(resource);
+				tres_load_ext_resource(engine, resource);
 			}
 
 			else if (strncmp(text, "[resource", 9) == 0) {
@@ -405,9 +372,6 @@ material_id material_load_tres(engine_t* engine, const char* path) {
 		}
 	}
 
-	fclose(file);
-	file = NULL;
-
 	char texture_id_ref[64] = "";
 	char palette_id_ref[64] = "";
 
@@ -447,11 +411,47 @@ material_id material_load_tres(engine_t* engine, const char* path) {
 	result = resource_add_material(&engine->resources, &material);
 
 cleanup:
-	if (file) {
-		fclose(file);
+	tres_free_ext_resources(ext_resources, ext_count);
+
+	return result;
+}
+
+material_id material_load_tres(engine_t* engine, const char* path) {
+	if (!engine || !path) {
+		return NB_RESOURCE_INVALID_ID;
 	}
 
-	tres_free_ext_resources(ext_resources, ext_count);
+	unsigned char* bytes = NULL;
+	size_t size = 0;
+	if (!nb_file_read_all(path, &bytes, &size)) {
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	FILE* file = fmemopen((void*)bytes, size, "r");
+	if (!file) {
+		free(bytes);
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	material_id result = tres_load_stream(engine, file);
+	fclose(file);
+	free(bytes);
+
+	return result;
+}
+
+material_id material_load_tres_mem(engine_t* engine, const void* data, size_t size) {
+	if (!engine || !data) {
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	FILE* file = nb_memstream_open(data, size);
+	if (!file) {
+		return NB_RESOURCE_INVALID_ID;
+	}
+
+	material_id result = tres_load_stream(engine, file);
+	fclose(file);
 
 	return result;
 }

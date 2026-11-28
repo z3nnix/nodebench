@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "asset/asset_db.h"
 #include "core/dynamic_array.h"
 #include "core/engine.h"
 #include "core/input.h"
@@ -871,15 +872,18 @@ static void wren_vm_module_complete(WrenVM* vm, const char* name, WrenLoadModule
 	}
 }
 
-static int wren_vm_file_exists(const char* path) {
-	FILE* file = fopen(path, "r");
-	if (!file) {
-		return 0;
+static char* wren_vm_read_source(const wren_vm_t* state, const char* path) {
+	unsigned char* data = NULL;
+	size_t size = 0;
+	const asset_db_t* db = state && state->engine ? &state->engine->assets : NULL;
+	if (!asset_db_read_all(db, path, &data, &size)) {
+		return NULL;
 	}
 
-	fclose(file);
+	char* source = script_load_mem(data, size);
+	free(data);
 
-	return 1;
+	return source;
 }
 
 static void wren_vm_scene_dir(const wren_vm_t* state, char* out, size_t size) {
@@ -929,19 +933,28 @@ static WrenLoadModuleResult wren_vm_load_module(WrenVM* vm, const char* name) {
 	char path[512];
 	char* source = NULL;
 	if (strchr(name, '/') || strchr(name, '.')) {
-		snprintf(path, sizeof(path), "%s", name);
-		source = script_load_file(path);
+		source = wren_vm_read_source(state, name);
+		if (!source) {
+			snprintf(path, sizeof(path), "%s.wren", name);
+			source = wren_vm_read_source(state, path);
+		}
 	}
 
 	else {
 		char scene_dir[256];
 		wren_vm_scene_dir(state, scene_dir, sizeof(scene_dir));
 		snprintf(path, sizeof(path), "%s/%s.wren", scene_dir, name);
-		if (!wren_vm_file_exists(path)) {
+		source = wren_vm_read_source(state, path);
+
+		if (!source) {
 			snprintf(path, sizeof(path), "assets/%s.wren", name);
+			source = wren_vm_read_source(state, path);
 		}
 
-		source = script_load_file(path);
+		if (!source) {
+			snprintf(path, sizeof(path), "%s.wren", name);
+			source = wren_vm_read_source(state, path);
+		}
 	}
 
 	if (!source) {

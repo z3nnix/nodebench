@@ -10,6 +10,7 @@
 #include "asset/asset_db.h"
 #include "audio/audio.h"
 #include "core/dynamic_array.h"
+#include "core/file_io.h"
 #include "render/material.h"
 #include "render/primitives.h"
 #include "render/texture.h"
@@ -277,49 +278,13 @@ static int tscn_set_resource_path(char* out, size_t size, const char* relative) 
 	return 1;
 }
 
-static const char* tscn_resolve_path(engine_t* engine, const char* path) {
-	static char buffer[512];
-	FILE* file = NULL;
-
-	if (engine && engine->assets_ready && asset_db_resolve(&engine->assets, path, buffer, sizeof(buffer))) {
-		return buffer;
+static int tscn_read_asset(engine_t* engine, const char* path, unsigned char** data, size_t* size) {
+	const asset_db_t* db = engine ? &engine->assets : NULL;
+	if (asset_db_read_all(db, path, data, size)) {
+		return 1;
 	}
 
-	if (strncmp(path, "res://", 6) == 0) {
-		const char* relative = path + 6;
-
-		snprintf(buffer, sizeof(buffer), "%s", relative);
-		file = fopen(buffer, "r");
-		if (file) {
-			fclose(file);
-
-			return buffer;
-		}
-
-		snprintf(buffer, sizeof(buffer), "assets/%s", relative);
-		file = fopen(buffer, "r");
-		if (file) {
-			fclose(file);
-
-			return buffer;
-		}
-
-		buffer[0] = '\0';
-
-		return buffer;
-	}
-
-	snprintf(buffer, sizeof(buffer), "assets/%s", path);
-	file = fopen(buffer, "r");
-	if (file) {
-		fclose(file);
-
-		return buffer;
-	}
-
-	buffer[0] = '\0';
-
-	return buffer;
+	return nb_file_read_all(path, data, size);
 }
 
 const tscn_ext_t* tscn_file_find_ext_by_id(const tscn_file_t* file, const char* id) {
@@ -357,11 +322,16 @@ static int tscn_load_ext_resource(engine_t* engine, tscn_ext_t* resource) {
 
 	const char* logical = resource->path;
 	if (resource->kind == NB_RESOURCE_KIND_PACKED_SCENE) {
-		const char* path = tscn_resolve_path(engine, logical);
-		if (!path[0]) {
+		unsigned char* bytes = NULL;
+		size_t size = 0;
+		int ok = tscn_read_asset(engine, logical, &bytes, &size);
+		free(bytes);
+		if (!ok) {
 			return 0;
 		}
+
 		resource->handle = 1;
+
 		return 1;
 	}
 	if (strncmp(logical, "res://primitive/", 16) == 0) {
@@ -394,83 +364,72 @@ static int tscn_load_ext_resource(engine_t* engine, tscn_ext_t* resource) {
 		return 0;
 	}
 
-	const char* path = tscn_resolve_path(engine, resource->path);
-	if (!path[0]) {
+	unsigned char* bytes = NULL;
+	size_t size = 0;
+	if (!tscn_read_asset(engine, resource->path, &bytes, &size)) {
 		return 0;
 	}
 
-	if (engine && engine->assets_ready) {
+	if (engine->assets_ready) {
 		asset_db_import(&engine->assets, resource->path);
 	}
 
+	int ok = 0;
+
 	if (resource->kind == NB_RESOURCE_KIND_MESH) {
 		mesh_t mesh;
-		if (!obj_load(path, &mesh)) {
-			return 0;
+		if (obj_load_mem(bytes, size, &mesh)) {
+			resource->handle = resource_add_mesh(&engine->resources, &mesh);
+			mesh_destroy(&mesh);
+			ok = resource->handle != NB_RESOURCE_INVALID_ID;
 		}
-
-		resource->handle = resource_add_mesh(&engine->resources, &mesh);
-		mesh_destroy(&mesh);
-
-		return resource->handle != NB_RESOURCE_INVALID_ID;
 	}
 
-	if (resource->kind == NB_RESOURCE_KIND_TEXTURE) {
-		if (!image_load(path, &resource->image)) {
-			return 0;
+	else if (resource->kind == NB_RESOURCE_KIND_TEXTURE) {
+		ok = image_load_mem(bytes, size, &resource->image);
+		if (ok) {
+			resource->has_image = 1;
 		}
-
-		resource->has_image = 1;
-
-		return 1;
 	}
 
-	if (resource->kind == NB_RESOURCE_KIND_PALETTE) {
-		if (!clut_load(path, &resource->palette)) {
-			return 0;
+	else if (resource->kind == NB_RESOURCE_KIND_PALETTE) {
+		ok = clut_load_mem(bytes, size, &resource->palette);
+		if (ok) {
+			resource->has_palette = 1;
 		}
-
-		resource->has_palette = 1;
-
-		return 1;
 	}
 
-	if (resource->kind == NB_RESOURCE_KIND_MATERIAL) {
-		resource->handle = material_load_tres(engine, path);
-
-		return resource->handle != NB_RESOURCE_INVALID_ID;
+	else if (resource->kind == NB_RESOURCE_KIND_MATERIAL) {
+		resource->handle = material_load_tres_mem(engine, bytes, size);
+		ok = resource->handle != NB_RESOURCE_INVALID_ID;
 	}
 
-	if (resource->kind == NB_RESOURCE_KIND_SCRIPT) {
-		char* source = script_load_file(path);
-		if (!source) {
-			return 0;
+	else if (resource->kind == NB_RESOURCE_KIND_SCRIPT) {
+		char* source = script_load_mem(bytes, size);
+		if (source) {
+			resource->handle = resource_add_script(&engine->resources, source);
+			free(source);
+			ok = resource->handle != NB_RESOURCE_INVALID_ID;
 		}
-
-		resource->handle = resource_add_script(&engine->resources, source);
-		free(source);
-
-		return resource->handle != NB_RESOURCE_INVALID_ID;
 	}
 
-	if (resource->kind == NB_RESOURCE_KIND_AUDIO) {
+	else if (resource->kind == NB_RESOURCE_KIND_AUDIO) {
 		audio_stream_t stream;
-		const char* name = resource->id;
-		if (!wav_load(path, &stream)) {
-			return 0;
+		if (wav_load_mem(bytes, size, &stream)) {
+			const char* name = resource->id;
+			if (strncmp(name, "audio_", 6) == 0 && name[6] != '\0') {
+				name = name + 6;
+			}
+
+			resource->handle = resource_add_audio(&engine->resources, &stream, name);
+			audio_stream_free(&stream);
+			ok = resource->handle != NB_RESOURCE_INVALID_ID;
 		}
-
-		if (strncmp(name, "audio_", 6) == 0 && name[6] != '\0') {
-			name = name + 6;
-		}
-
-		resource->handle = resource_add_audio(&engine->resources, &stream, name);
-		audio_stream_free(&stream);
-
-		return resource->handle != NB_RESOURCE_INVALID_ID;
 	}
 
-	return 0;
+	free(bytes);
+
+	return ok;
 }
 
 static int tscn_grow_ext(tscn_file_t* file) {
@@ -583,8 +542,8 @@ static nb_result_t tscn_parse_stream(FILE* stream, engine_t* engine, tscn_file_t
 				}
 
 				if (resource->path[0] && resource->uuid[0] && engine && engine->assets_ready) {
-					const char* resolved = tscn_resolve_path(engine, resource->path);
-					if (!resolved[0]) {
+					char probe[NB_ASSET_DB_PATH_MAX];
+					if (!asset_db_resolve(&engine->assets, resource->path, probe, sizeof(probe))) {
 						char relative[NB_ASSET_DB_PATH_MAX];
 						if (asset_db_path_for_uuid(&engine->assets, resource->uuid, relative, sizeof(relative))) {
 							tscn_set_resource_path(resource->path, sizeof(resource->path), relative);
@@ -927,14 +886,19 @@ static nb_result_t tscn_expand_instances(scene_t* scene, engine_t* engine, entit
 		return NB_RESULT_ERROR_INVALID_ARGUMENT;
 	}
 
-	const char* resolved = tscn_resolve_path(engine, path);
-	if (!resolved[0]) {
+	char resolved[NB_TSCN_INSTANCE_PATH_MAX];
+	snprintf(resolved, sizeof(resolved), "%.*s", NB_TSCN_INSTANCE_PATH_MAX - 1, path);
+
+	unsigned char* bytes = NULL;
+	size_t size = 0;
+	if (!tscn_read_asset(engine, path, &bytes, &size)) {
 		engine_log(engine, "tscn instance path failed path=%s", path);
 		return NB_RESULT_ERROR_RESOURCE;
 	}
 
 	for (int i = 0; i < depth; i++) {
 		if (strcmp(stack[i], resolved) == 0) {
+			free(bytes);
 			engine_log(engine, "tscn instance cycle path=%s", resolved);
 			return NB_RESULT_ERROR_SCENE;
 		}
@@ -944,7 +908,8 @@ static nb_result_t tscn_expand_instances(scene_t* scene, engine_t* engine, entit
 
 	tscn_file_t sub_file;
 	tscn_file_init(&sub_file);
-	nb_result_t result = tscn_file_load(&sub_file, resolved, engine);
+	nb_result_t result = tscn_file_load_from_buffer(&sub_file, resolved, (const char*)bytes, size, engine);
+	free(bytes);
 	scene_t sub_scene;
 	scene_init(&sub_scene);
 	if (result == NB_RESULT_OK) {

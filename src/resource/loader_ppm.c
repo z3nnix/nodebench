@@ -1,3 +1,5 @@
+#include "core/memstream.h"
+
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -149,19 +151,15 @@ static int image_load_bmp(FILE* file, image_t* image) {
 	return 1;
 }
 
-int image_load(const char* path, image_t* image) {
-	if (!path || !image) { return 0; }
+static int image_load_stream(FILE* file, image_t* image) {
+	if (!file || !image) { return 0; }
 
 	image->width = 0;
 	image->height = 0;
 	image->rgb = NULL;
 
-	FILE* file = fopen(path, "rb");
-	if (!file) { return 0; }
-
 	uint8_t magic[2] = { 0, 0 };
 	if (fread(magic, 1, 2, file) != 2) {
-		fclose(file);
 		return 0;
 	}
 
@@ -175,14 +173,36 @@ int image_load(const char* path, image_t* image) {
 		ok = image_load_bmp(file, image);
 	}
 
-	fclose(file);
-
 	if (!ok) {
 		image_free(image);
 		return 0;
 	}
 
 	return 1;
+}
+
+int image_load(const char* path, image_t* image) {
+	if (!path || !image) { return 0; }
+
+	FILE* file = fopen(path, "rb");
+	if (!file) { return 0; }
+
+	int ok = image_load_stream(file, image);
+	fclose(file);
+
+	return ok;
+}
+
+int image_load_mem(const void* data, size_t size, image_t* image) {
+	if (!data || !image) { return 0; }
+
+	FILE* file = nb_memstream_open(data, size);
+	if (!file) { return 0; }
+
+	int ok = image_load_stream(file, image);
+	fclose(file);
+
+	return ok;
 }
 
 void image_free(image_t* image) {
@@ -217,14 +237,11 @@ static int parse_color_line(char* line, int* color) {
 	return 1;
 }
 
-int clut_load(const char* path, palette_t* palette) {
-	if (!path || !palette) { return 0; }
+static int clut_load_stream(FILE* file, palette_t* palette) {
+	if (!file || !palette) { return 0; }
 
 	palette->colors = NULL;
 	palette->count = 0;
-
-	FILE* file = fopen(path, "r");
-	if (!file) { return 0; }
 
 	char line[1024];
 	int count = 0;
@@ -261,14 +278,36 @@ int clut_load(const char* path, palette_t* palette) {
 	}
 
 	palette->count = count;
-	fclose(file);
 
 	return 1;
 
 fail:
 	clut_free(palette);
-	fclose(file);
 	return 0;
+}
+
+int clut_load(const char* path, palette_t* palette) {
+	if (!path || !palette) { return 0; }
+
+	FILE* file = fopen(path, "r");
+	if (!file) { return 0; }
+
+	int ok = clut_load_stream(file, palette);
+	fclose(file);
+
+	return ok;
+}
+
+int clut_load_mem(const void* data, size_t size, palette_t* palette) {
+	if (!data || !palette) { return 0; }
+
+	FILE* file = nb_memstream_open(data, size);
+	if (!file) { return 0; }
+
+	int ok = clut_load_stream(file, palette);
+	fclose(file);
+
+	return ok;
 }
 
 void clut_free(palette_t* palette) {
