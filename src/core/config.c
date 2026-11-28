@@ -571,7 +571,7 @@ void render_config_init(render_config_t* config) {
 	config->log_level = NB_LOG_INFO;
 	config->log_file[0] = '\0';
 	config->project_root[0] = '\0';
-	snprintf(config->scene_path, sizeof(config->scene_path), "%s", "examples/kula/scenes/level01.tscn");
+	config->scene_path[0] = '\0';
 	snprintf(config->project_name, sizeof(config->project_name), "%s", "Nodebench Project");
 	snprintf(config->mode, sizeof(config->mode), "%s", "game");
 	config->key_binding_count = 0;

@@ -304,28 +304,12 @@ static const char* tscn_resolve_path(engine_t* engine, const char* path) {
 			return buffer;
 		}
 
-		snprintf(buffer, sizeof(buffer), "examples/%s", relative);
-		file = fopen(buffer, "r");
-		if (file) {
-			fclose(file);
-
-			return buffer;
-		}
-
 		buffer[0] = '\0';
 
 		return buffer;
 	}
 
 	snprintf(buffer, sizeof(buffer), "assets/%s", path);
-	file = fopen(buffer, "r");
-	if (file) {
-		fclose(file);
-
-		return buffer;
-	}
-
-	snprintf(buffer, sizeof(buffer), "examples/%s", path);
 	file = fopen(buffer, "r");
 	if (file) {
 		fclose(file);

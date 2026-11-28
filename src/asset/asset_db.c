@@ -361,11 +361,6 @@ const char* asset_db_resolve(const asset_db_t* db, const char* path, char* out, 
 		return out;
 	}
 
-	snprintf(candidate, sizeof(candidate), "examples/%s", logical);
-	if (asset_db_try_candidate(db, candidate, out, size)) {
-		return out;
-	}
-
 	return NULL;
 }
 

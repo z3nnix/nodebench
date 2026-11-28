@@ -1,3 +1,5 @@
+#include "test/fixture_project.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -5,7 +7,9 @@
 #include "asset/asset_db.h"
 
 int main(void) {
-	if (chdir("examples/kula") != 0) {
+	char cwd[PATH_MAX];
+	char root[PATH_MAX];
+	if (!getcwd(cwd, sizeof(cwd)) || !nb_fixture_create(root, sizeof(root)) || chdir(root) != 0) {
 		return 1;
 	}
 
@@ -54,6 +58,10 @@ int main(void) {
 	}
 
 	asset_db_shutdown(&db);
+	if (chdir(cwd) != 0) {
+		return 1;
+	}
+	nb_fixture_destroy(root);
 	printf("asset db test ok\n");
 
 	return 0;

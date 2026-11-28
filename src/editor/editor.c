@@ -1463,7 +1463,7 @@ static const char* editor_scene_path(editor_t* editor, engine_t* engine) {
 	if (engine && engine->scene_doc.path[0]) { return engine->scene_doc.path; }
 	if (engine && engine->config.scene_path[0]) { return engine->config.scene_path; }
 	if (editor && editor->scene_path[0]) { return editor->scene_path; }
-	return "examples/kula/scenes/level01.tscn";
+	return NULL;
 }
 
 static int editor_save_scene(editor_t* editor, engine_t* engine) {

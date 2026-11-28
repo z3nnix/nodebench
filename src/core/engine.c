@@ -143,6 +143,7 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 
 	if (config_cli_requests_launcher(argc, args) || !config_cli_selects_session(argc, args)) {
 		engine->launcher.active = 1;
+		snprintf(engine->config.mode, sizeof(engine->config.mode), "%s", "launcher");
 	}
 
 	char root[PATH_MAX];
@@ -164,6 +165,9 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 		for (int i = 0; i < owned_count; i++) { free(owned[i]); }
 		if (args != argv) { free(args); }
 		return NB_RESULT_ERROR_CONFIG;
+	}
+	if (engine->launcher.active) {
+		snprintf(engine->config.mode, sizeof(engine->config.mode), "launcher");
 	}
 
 	int cli_status = config_apply_cli(&engine->config, argc, args);

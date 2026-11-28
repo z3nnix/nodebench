@@ -1,3 +1,5 @@
+#include "test/fixture_project.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,7 +78,9 @@ static int scene_doc_test_close(float a, float b) {
 }
 
 int main(void) {
-	if (chdir("examples/kula") != 0) {
+	char cwd[PATH_MAX];
+	char root[PATH_MAX];
+	if (!getcwd(cwd, sizeof(cwd)) || !nb_fixture_create(root, sizeof(root)) || chdir(root) != 0) {
 		return 1;
 	}
 
@@ -459,6 +463,10 @@ int main(void) {
 	resource_store_shutdown(&engine.resources);
 	log_shutdown(&engine.log);
 
+	if (chdir(cwd) != 0) {
+		return 1;
+	}
+	nb_fixture_destroy(root);
 	printf("scene doc test ok\n");
 
 	return 0;
