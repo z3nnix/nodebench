@@ -2,6 +2,7 @@
 #define NB_EDITOR_EDITOR_H
 
 #include "core/config.h"
+#include "editor/editor_dnd.h"
 #include "editor/editor_fs.h"
 #include "editor/editor_icons.h"
 #include "scene/scene.h"
@@ -168,7 +169,6 @@ typedef struct {
 	int expanded_capacity;
 	char rename_buffer[NB_EDITOR_FS_NAME_MAX];
 	char rename_path[NB_EDITOR_FS_PATH_MAX];
-	char drag_path[NB_EDITOR_FS_PATH_MAX];
 	char drop_dir[NB_EDITOR_FS_PATH_MAX];
 	char context_path[NB_EDITOR_FS_PATH_MAX];
 	float context_rect[4];
@@ -178,9 +178,6 @@ typedef struct {
 	int history_index;
 	int context_empty;
 	int tile_width;
-	int drag_start_x;
-	int drag_start_y;
-	int drag_active;
 	int rename_open;
 	int resizing;
 	int tree_resizing;
@@ -220,6 +217,8 @@ typedef struct {
 	float inspector_mesh_rect[4];
 	float inspector_material_rect[4];
 	float inspector_script_rect[4];
+	float inspector_tres_texture_rect[4];
+	float inspector_tres_palette_rect[4];
 	float camera_pos[3];
 	float camera_yaw;
 	float camera_pitch;
@@ -312,6 +311,7 @@ typedef struct {
 	int tab_capacity;
 	int active_tab;
 	editor_explorer_t explorer;
+	editor_dnd_state_t dnd;
 	char dialog_path[NB_EDITOR_FS_PATH_MAX];
 	char dialog_dst[NB_EDITOR_FS_PATH_MAX];
 	char dialog_name[NB_EDITOR_FS_NAME_MAX];

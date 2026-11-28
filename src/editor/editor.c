@@ -20,6 +20,7 @@
 #include "core/dynamic_array.h"
 #include "core/engine.h"
 #include "editor/editor_app.h"
+#include "editor/editor_dnd.h"
 #include "render/color.h"
 #include "render/material.h"
 #include "render/primitives.h"
@@ -40,6 +41,8 @@ static void editor_explorer_refresh(editor_t* editor);
 static void editor_explorer_enter(editor_t* editor, const char* path);
 static void editor_hierarchy_finish_rename(editor_t* editor, engine_t* engine, unsigned int id, int commit);
 static void editor_create_scene_instance(editor_t* editor, engine_t* engine, const char* path, unsigned int parent);
+static void editor_dnd_spawn_at(editor_t* editor, engine_t* engine, const char* path, vec3_t pos);
+static int editor_dnd_apply_inspector(editor_t* editor, engine_t* engine, editor_dnd_target_t target, const char* path, int ext_index);
 
 #define NK_INCLUDE_FIXED_TYPES
 #define NK_INCLUDE_STANDARD_IO
@@ -59,6 +62,38 @@ static void editor_set_status(editor_t* editor, const char* status) {
 	snprintf(editor->status, sizeof(editor->status), "%s", status);
 }
 
+static void editor_dnd_arm(editor_t* editor, struct nk_context* ctx, struct nk_rect rect, const char* path) {
+	if (!editor || !ctx || !path || !*path) { return; }
+	if (!nk_input_is_mouse_pressed(&ctx->input, NK_BUTTON_LEFT)) { return; }
+	if (!nk_input_is_mouse_hovering_rect(&ctx->input, rect)) { return; }
+	editor_dnd_reset(&editor->dnd);
+	snprintf(editor->dnd.path, sizeof(editor->dnd.path), "%s", path);
+	editor->dnd.pressed = 1;
+	editor->dnd.start_x = (int)ctx->input.mouse.pos.x;
+	editor->dnd.start_y = (int)ctx->input.mouse.pos.y;
+}
+
+static void editor_dnd_view_from_editor(const editor_t* editor, editor_dnd_view_t* view) {
+	view->pos[0] = editor->camera_pos[0];
+	view->pos[1] = editor->camera_pos[1];
+	view->pos[2] = editor->camera_pos[2];
+	view->yaw = editor->camera_yaw;
+	view->pitch = editor->camera_pitch;
+	view->viewport_x = editor->viewport_x;
+	view->viewport_y = editor->viewport_y;
+	view->viewport_w = editor->viewport_w;
+	view->viewport_h = editor->viewport_h;
+}
+
+static void editor_dnd_highlight(editor_t* editor, struct nk_context* ctx, const float rect[4], editor_dnd_target_t target) {
+	if (!editor || !ctx || !ctx->current) { return; }
+	if (!editor->dnd.active || editor->dnd.target != target) { return; }
+	int mx = (int)ctx->input.mouse.pos.x;
+	int my = (int)ctx->input.mouse.pos.y;
+	if (!editor_dnd_point_in_rect(rect, mx, my)) { return; }
+	nk_fill_rect(&ctx->current->buffer, nk_rect(rect[0], rect[1], rect[2], rect[3]), 0.0f, nk_rgba(80, 130, 190, 90));
+}
+
 static double editor_now_seconds(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -75,6 +110,8 @@ static void editor_inspector_mark_dirty(editor_t* editor) {
 static void editor_inspector_show_node(editor_t* editor) {
 	if (!editor) { return; }
 	editor_inspector_autosave(editor, 1);
+	editor->inspector_tres_texture_rect[0] = 0.0f;
+	editor->inspector_tres_palette_rect[0] = 0.0f;
 	editor->inspector_kind = NB_EDITOR_INSPECTOR_NODE;
 	editor->inspector_path[0] = '\0';
 	editor->inspector_dirty = 0;
@@ -85,6 +122,9 @@ static void editor_inspector_show_node(editor_t* editor) {
 
 static void editor_inspector_set_resource(editor_t* editor, editor_inspector_kind_t kind, const char* path) {
 	editor_inspector_autosave(editor, 1);
+	editor->inspector_mesh_rect[0] = 0.0f;
+	editor->inspector_material_rect[0] = 0.0f;
+	editor->inspector_script_rect[0] = 0.0f;
 	editor->inspector_kind = kind;
 	snprintf(editor->inspector_path, sizeof(editor->inspector_path), "%.*s", (int)sizeof(editor->inspector_path) - 1, path);
 	editor->inspector_node_entity = editor->selected_entity;
@@ -1307,6 +1347,9 @@ static void editor_hierarchy_clear_state(editor_t* editor) {
 	editor->inspector_mesh_rect[0] = 0.0f;
 	editor->inspector_material_rect[0] = 0.0f;
 	editor->inspector_script_rect[0] = 0.0f;
+	editor->inspector_tres_texture_rect[0] = 0.0f;
+	editor->inspector_tres_palette_rect[0] = 0.0f;
+	editor_dnd_reset(&editor->dnd);
 	editor_hierarchy_reset_drag(editor);
 	editor->inspector_name_entity = NB_ENTITY_INVALID;
 }
@@ -2168,14 +2211,10 @@ static void editor_explorer_draw_tree_dir(editor_t* editor, engine_t* engine, st
 	editor_explorer_draw_icon(editor, ctx, nk_rect(row.x + 18.0f, row.y + 3.0f, 14.0f, 14.0f), is_dir ? 1 : editor_explorer_type_index(path));
 	editor_explorer_draw_clipped_text(ctx, nk_rect(row.x + 36.0f, row.y + 1.0f, row.w - 40.0f, 20.0f), name ? name : path, 0,
 		active ? nk_rgb(240, 240, 240) : nk_rgb(200, 200, 200));
+	if (!is_dir) { editor_dnd_arm(editor, ctx, row, path); }
 	if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, row)) {
 		snprintf(editor->explorer.selected_path, sizeof(editor->explorer.selected_path), "%.*s", (int)sizeof(editor->explorer.selected_path) - 1, path);
 		editor->explorer.context_empty = 0;
-		if (!is_dir) {
-			snprintf(editor->explorer.drag_path, sizeof(editor->explorer.drag_path), "%.*s", (int)sizeof(editor->explorer.drag_path) - 1, path);
-			editor->explorer.drag_start_x = (int)ctx->input.mouse.pos.x;
-			editor->explorer.drag_start_y = (int)ctx->input.mouse.pos.y;
-		}
 		if (has_dirs && nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, toggle_rect)) {
 			editor_explorer_toggle_expanded(editor, path);
 		}
@@ -2188,6 +2227,7 @@ static void editor_explorer_draw_tree_dir(editor_t* editor, engine_t* engine, st
 			int double_clicked = nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_DOUBLE, row);
 			int repeated_click = strcmp(editor->explorer.last_click_path, path) == 0 && now - editor->explorer.last_click_time < 0.35;
 			if (double_clicked || repeated_click) {
+				editor_dnd_reset(&editor->dnd);
 				editor_explorer_activate(editor, engine, path);
 				editor->explorer.last_click_path[0] = '\0';
 			}
@@ -2213,6 +2253,7 @@ static void editor_explorer_draw_tree_dir(editor_t* editor, engine_t* engine, st
 		editor->explorer.tree_row_rects[*row_count][1] = row.y;
 		editor->explorer.tree_row_rects[*row_count][2] = row.w;
 		editor->explorer.tree_row_rects[*row_count][3] = row.h;
+		editor_dnd_highlight(editor, ctx, editor->explorer.tree_row_rects[*row_count], NB_EDITOR_DND_EXPLORER_DIR);
 		(*row_count)++;
 	}
 	nk_layout_row_end(ctx);
@@ -2224,80 +2265,142 @@ static void editor_explorer_draw_tree_dir(editor_t* editor, engine_t* engine, st
 }
 
 static void editor_explorer_handle_drag(editor_t* editor, engine_t* engine, struct nk_context* ctx) {
-	if (!editor || !engine || !ctx) { return; }
-	if (!editor->explorer.drag_path[0]) { return; }
-	struct nk_vec2 mouse = ctx->input.mouse.pos;
-	int dx = (int)mouse.x - editor->explorer.drag_start_x;
-	int dy = (int)mouse.y - editor->explorer.drag_start_y;
-	if (!editor->explorer.drag_active && dx * dx + dy * dy > 36) { editor->explorer.drag_active = 1; }
+	(void)engine;
+	if (!editor || !ctx) { return; }
+	if (!editor->dnd.pressed || !editor->dnd.path[0]) { return; }
+	if (!nk_input_is_mouse_down(&ctx->input, NK_BUTTON_LEFT)) {
+		editor_dnd_reset(&editor->dnd);
+		return;
+	}
+	int dx = (int)ctx->input.mouse.pos.x - editor->dnd.start_x;
+	int dy = (int)ctx->input.mouse.pos.y - editor->dnd.start_y;
+	if (!editor->dnd.active && dx * dx + dy * dy > 36) {
+		editor->dnd.active = 1;
+		editor_set_status(editor, "dragging asset");
+	}
+}
+
+static editor_dnd_target_t editor_dnd_resolve_target(editor_t* editor, struct nk_context* ctx, int mx, int my) {
+	if (!editor || !ctx) { return NB_EDITOR_DND_NONE; }
+	editor->dnd.hierarchy_parent = NB_ENTITY_INVALID;
+	editor->dnd.target_path[0] = '\0';
+	editor->dnd.tres_ext_index = -1;
+
+	float* rects[5] = {
+		editor->inspector_mesh_rect,
+		editor->inspector_material_rect,
+		editor->inspector_script_rect,
+		editor->inspector_tres_texture_rect,
+		editor->inspector_tres_palette_rect
+	};
+	editor_dnd_target_t kinds[5] = {
+		NB_EDITOR_DND_INSPECTOR_MESH,
+		NB_EDITOR_DND_INSPECTOR_MATERIAL,
+		NB_EDITOR_DND_INSPECTOR_SCRIPT,
+		NB_EDITOR_DND_INSPECTOR_TEXTURE,
+		NB_EDITOR_DND_INSPECTOR_PALETTE
+	};
+	for (int i = 0; i < 5; i++) {
+		if (!editor_dnd_point_in_rect(rects[i], mx, my)) { continue; }
+		if (i == 3) {
+			editor->dnd.tres_ext_index = editor_tres_find_ref(&editor->inspector_tres, editor->inspector_tres.texture, 0);
+		}
+		else if (i == 4) {
+			editor->dnd.tres_ext_index = editor_tres_find_ref(&editor->inspector_tres, editor->inspector_tres.palette, 1);
+		}
+		return kinds[i];
+	}
+
+	if (editor_dnd_point_in_rect(editor->hierarchy_panel_rect, mx, my)) {
+		for (int i = 0; i < editor->hierarchy_row_rect_count; i++) {
+			if (editor_dnd_point_in_rect(editor->hierarchy_row_rects[i], mx, my)) {
+				editor->dnd.hierarchy_parent = editor->hierarchy_row_entities[i];
+				break;
+			}
+		}
+		return NB_EDITOR_DND_HIERARCHY;
+	}
+
+	for (int i = 0; i < editor->explorer.tree_row_count; i++) {
+		if (!editor_dnd_point_in_rect(editor->explorer.tree_row_rects[i], mx, my)) { continue; }
+		const char* target = editor->explorer.tree_row_paths[i];
+		if (!editor_fs_is_dir(target)) { continue; }
+		snprintf(editor->dnd.target_path, sizeof(editor->dnd.target_path), "%s", target);
+		return NB_EDITOR_DND_EXPLORER_DIR;
+	}
+
+	if (mx >= editor->viewport_x && mx < editor->viewport_x + editor->viewport_w && my >= editor->viewport_y && my < editor->viewport_y + editor->viewport_h) {
+		return NB_EDITOR_DND_VIEWPORT;
+	}
+	return NB_EDITOR_DND_NONE;
 }
 
 static void editor_explorer_handle_drop(editor_t* editor, engine_t* engine, struct nk_context* ctx) {
 	if (!editor || !engine || !ctx) { return; }
-	if (editor->resource_fork.open || editor->picker.open || editor->dialog_kind != NB_EDITOR_DIALOG_NONE) { return; }
-	if (!editor->explorer.drag_path[0]) { return; }
-	if (!nk_input_is_mouse_released(&ctx->input, NK_BUTTON_LEFT)) { return; }
-	const char* path = editor->explorer.drag_path;
-	const char* ext = editor_fs_ext(path);
-	if (editor->explorer.drag_active && ext && strcmp(ext, "tscn") == 0) {
-		unsigned int parent = NB_ENTITY_INVALID;
-		struct nk_rect panel = nk_rect(editor->hierarchy_panel_rect[0], editor->hierarchy_panel_rect[1], editor->hierarchy_panel_rect[2], editor->hierarchy_panel_rect[3]);
-		if (nk_input_is_mouse_hovering_rect(&ctx->input, panel)) {
-			for (int i = 0; i < editor->hierarchy_row_rect_count; i++) {
-				struct nk_rect row = nk_rect(editor->hierarchy_row_rects[i][0], editor->hierarchy_row_rects[i][1], editor->hierarchy_row_rects[i][2], editor->hierarchy_row_rects[i][3]);
-				if (nk_input_is_mouse_hovering_rect(&ctx->input, row)) {
-					parent = editor->hierarchy_row_entities[i];
-					break;
-				}
-			}
-			editor_create_scene_instance(editor, engine, path, parent);
-			editor->explorer.drag_path[0] = '\0';
-			editor->explorer.drag_active = 0;
-			return;
+	if (!editor->dnd.path[0]) {
+		editor_dnd_reset(&editor->dnd);
+		return;
+	}
+	int down = nk_input_is_mouse_down(&ctx->input, NK_BUTTON_LEFT);
+	int released = nk_input_is_mouse_released(&ctx->input, NK_BUTTON_LEFT);
+	if (!down && !released) {
+		editor_dnd_reset(&editor->dnd);
+		return;
+	}
+	int mx = (int)ctx->input.mouse.pos.x;
+	int my = (int)ctx->input.mouse.pos.y;
+	if (!released) {
+		if (editor->dnd.active) { editor->dnd.target = editor_dnd_resolve_target(editor, ctx, mx, my); }
+		return;
+	}
+	if (!editor->dnd.active) {
+		editor_dnd_reset(&editor->dnd);
+		return;
+	}
+	if (editor->resource_fork.open || editor->picker.open || editor->dialog_kind != NB_EDITOR_DIALOG_NONE) {
+		editor_dnd_reset(&editor->dnd);
+		return;
+	}
+	editor->dnd.target = editor_dnd_resolve_target(editor, ctx, mx, my);
+	const char* path = editor->dnd.path;
+	nb_resource_kind_t kind = editor_dnd_kind_for_path(path);
+	editor_dnd_target_t target = editor->dnd.target;
+	if (target == NB_EDITOR_DND_HIERARCHY) {
+		if (!editor_dnd_accepts(kind, NB_RESOURCE_KIND_PACKED_SCENE)) {
+			editor_set_status(editor, "incompatible resource");
+		}
+		else {
+			editor_create_scene_instance(editor, engine, path, editor->dnd.hierarchy_parent);
 		}
 	}
-	if (editor->explorer.drag_active && engine->scene_graph && editor->selected_entity != NB_ENTITY_INVALID) {
-		node_t* node = scene_get_node(engine->scene_graph, editor->selected_entity);
-		float* rects[3] = { editor->inspector_mesh_rect, editor->inspector_material_rect, editor->inspector_script_rect };
-		editor_picker_kind_t kinds[3] = { NB_EDITOR_PICKER_MESH, NB_EDITOR_PICKER_MATERIAL, NB_EDITOR_PICKER_SCRIPT };
-		for (int i = 0; i < 3 && node; i++) {
-			if (!rects[i][0]) { continue; }
-			struct nk_rect rect = nk_rect(rects[i][0], rects[i][1], rects[i][2], rects[i][3]);
-			if (!nk_input_is_mouse_hovering_rect(&ctx->input, rect)) { continue; }
-			if (!editor_picker_accepts(kinds[i], ext)) {
-				editor_set_status(editor, "incompatible resource");
-				editor->explorer.drag_path[0] = '\0';
-				editor->explorer.drag_active = 0;
-				return;
+	else if (target == NB_EDITOR_DND_VIEWPORT) {
+		if (kind == NB_RESOURCE_KIND_NONE || kind == NB_RESOURCE_KIND_AUDIO) {
+			editor_set_status(editor, "unsupported drop type");
+		}
+		else {
+			editor_dnd_view_t view;
+			vec3_t pos;
+			editor_dnd_view_from_editor(editor, &view);
+			if (editor_dnd_ground_point(&view, mx, my, &pos)) {
+				editor_dnd_spawn_at(editor, engine, path, pos);
 			}
-			editor_history_push(editor, engine);
-			if (!editor_assign_asset(editor, engine, node, kinds[i], path)) {
-				editor_undo(editor, engine);
-			}
-			editor->explorer.drag_path[0] = '\0';
-			editor->explorer.drag_active = 0;
-			return;
 		}
 	}
-	if (editor->explorer.drag_active) {
-		for (int i = 0; i < editor->explorer.tree_row_count; i++) {
-			float* r = editor->explorer.tree_row_rects[i];
-			struct nk_rect rect = nk_rect(r[0], r[1], r[2], r[3]);
-			if (!nk_input_is_mouse_hovering_rect(&ctx->input, rect)) { continue; }
-			const char* target = editor->explorer.tree_row_paths[i];
-			if (editor_fs_is_dir(target)) {
-				editor->dialog_kind = NB_EDITOR_DIALOG_MOVE;
-				editor->dialog_target = 0;
-				snprintf(editor->dialog_title, sizeof(editor->dialog_title), "Move File");
-				snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", path);
-				snprintf(editor->dialog_dst, sizeof(editor->dialog_dst), "%s", target);
-				snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Move to folder:");
-			}
-			break;
-		}
+	else if (target == NB_EDITOR_DND_INSPECTOR_MESH || target == NB_EDITOR_DND_INSPECTOR_MATERIAL || target == NB_EDITOR_DND_INSPECTOR_SCRIPT || target == NB_EDITOR_DND_INSPECTOR_TEXTURE || target == NB_EDITOR_DND_INSPECTOR_PALETTE) {
+		editor_dnd_apply_inspector(editor, engine, target, path, editor->dnd.tres_ext_index);
 	}
-	editor->explorer.drag_path[0] = '\0';
-	editor->explorer.drag_active = 0;
+	else if (target == NB_EDITOR_DND_EXPLORER_DIR && editor->dnd.target_path[0]) {
+		editor->dialog_kind = NB_EDITOR_DIALOG_MOVE;
+		editor->dialog_target = 0;
+		snprintf(editor->dialog_title, sizeof(editor->dialog_title), "Move File");
+		snprintf(editor->dialog_path, sizeof(editor->dialog_path), "%s", path);
+		snprintf(editor->dialog_dst, sizeof(editor->dialog_dst), "%s", editor->dnd.target_path);
+		snprintf(editor->dialog_text, sizeof(editor->dialog_text), "Move to folder:");
+	}
+	else {
+		editor_set_status(editor, "drop cancelled");
+	}
+	editor_dnd_reset(&editor->dnd);
 }
 
 static void editor_explorer_dialog_rename(editor_t* editor, const char* path) {
@@ -2439,16 +2542,13 @@ static void editor_create_project_from_dialog(editor_t* editor, engine_t* engine
 static void editor_explorer_item_click(editor_t* editor, engine_t* engine, struct nk_context* ctx, struct nk_rect rect, const editor_fs_entry_t* entry) {
 	if (!editor || !engine || !ctx || !entry) { return; }
 	snprintf(editor->explorer.selected_path, sizeof(editor->explorer.selected_path), "%.*s", (int)sizeof(editor->explorer.selected_path) - 1, entry->path);
-	snprintf(editor->explorer.drag_path, sizeof(editor->explorer.drag_path), "%s", entry->path);
-	editor->explorer.drag_start_x = (int)ctx->input.mouse.pos.x;
-	editor->explorer.drag_start_y = (int)ctx->input.mouse.pos.y;
 	double now = editor_now_seconds();
 	int double_clicked = nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_DOUBLE, rect);
 	int repeated_click = strcmp(editor->explorer.last_click_path, entry->path) == 0 && now - editor->explorer.last_click_time < 0.35;
 	if (double_clicked || repeated_click) {
+		editor_dnd_reset(&editor->dnd);
 		editor_explorer_activate(editor, engine, entry->path);
 		editor->explorer.last_click_path[0] = '\0';
-		editor->explorer.drag_path[0] = '\0';
 	}
 	else {
 		editor->explorer.last_click_time = now;
@@ -2718,6 +2818,7 @@ static void editor_draw_explorer(editor_t* editor, engine_t* engine, int win_w, 
 						editor_explorer_type_index(entry->path));
 					editor_explorer_draw_name(ctx, nk_rect(box.x + 2.0f, box.y + 56.0f, box.w - 4.0f, 26.0f), entry->name,
 						selected ? nk_rgb(240, 240, 240) : nk_rgb(205, 205, 205));
+					editor_dnd_arm(editor, ctx, cell, entry->path);
 					if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, cell)) {
 						editor_explorer_item_click(editor, engine, ctx, cell, entry);
 						editor->explorer.context_empty = 0;
@@ -2779,6 +2880,7 @@ static void editor_draw_explorer(editor_t* editor, engine_t* engine, int win_w, 
 						editor_explorer_type_index(entry->path));
 					editor_explorer_draw_clipped_text(ctx, nk_rect(row.x + 22.0f, row.y + 2.0f, row.w - 26.0f, 18.0f), entry->name, 0,
 						selected ? nk_rgb(240, 240, 240) : nk_rgb(205, 205, 205));
+					editor_dnd_arm(editor, ctx, row, entry->path);
 					if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, row)) {
 						editor_explorer_item_click(editor, engine, ctx, row, entry);
 						editor->explorer.context_empty = 0;
@@ -3350,18 +3452,12 @@ static void editor_get_camera(editor_t* editor, camera_t* camera) {
 }
 
 static vec3_t editor_screen_ray(editor_t* editor, engine_t* engine, int mx, int my) {
-	camera_t cam;
-	editor_get_camera(editor, &cam);
-	float aspect = (float)editor->viewport_w / (float)(editor->viewport_h > 0 ? editor->viewport_h : 1);
-	float ndc_x = ((float)(mx - editor->viewport_x) / (float)editor->viewport_w) * 2.0f - 1.0f;
-	float ndc_y = 1.0f - ((float)(my - editor->viewport_y) / (float)editor->viewport_h) * 2.0f;
-	float tan_half = tanf(cam.fov * 3.14159265f / 360.0f);
-	vec3_t forward = vec3_normalize(vec3_sub(cam.target, cam.eye));
-	vec3_t right = vec3_normalize(vec3_cross(forward, cam.up));
-	vec3_t up = vec3_cross(right, forward);
-	vec3_t dir = vec3_add(vec3_add(vec3_scale(right, ndc_x * tan_half * aspect), vec3_scale(up, ndc_y * tan_half)), forward);
+	editor_dnd_view_t view;
+	vec3_t dir = { 0.0f, 0.0f, -1.0f };
+	editor_dnd_view_from_editor(editor, &view);
 	(void)engine;
-	return vec3_normalize(dir);
+	if (!editor_dnd_screen_ray(&view, mx, my, &dir)) { return dir; }
+	return dir;
 }
 
 static int editor_project_point(editor_t* editor, vec3_t world, float* sx, float* sy) {
@@ -3689,11 +3785,8 @@ static void editor_hierarchy_update_drop(editor_t* editor, engine_t* engine, edi
 		return;
 	}
 
-	if (!hovered_row && rows->count > 0) {
-		struct nk_rect first = rows->rows[0].rect;
-		if (mx >= first.x && mx < first.x + first.w) {
-			editor_hierarchy_set_drop(editor, engine, NB_ENTITY_INVALID, -1, 3);
-		}
+	if (!hovered_row && rows->count > 0 && editor_dnd_point_in_rect(editor->hierarchy_panel_rect, mx, my)) {
+		editor_hierarchy_set_drop(editor, engine, NB_ENTITY_INVALID, -1, 3);
 	}
 }
 
@@ -4017,6 +4110,41 @@ static void editor_create_node(editor_t* editor, engine_t* engine, unsigned int 
 	if (state) { *state = 1; }
 	engine->scene_doc.dirty = 1;
 	editor_set_status(editor, "node created");
+}
+
+static void editor_dnd_spawn_at(editor_t* editor, engine_t* engine, const char* path, vec3_t pos) {
+	if (!editor || !engine || !engine->scene_graph || !path || !*path) { return; }
+	nb_resource_kind_t kind = editor_dnd_kind_for_path(path);
+	node_t* node = NULL;
+	unsigned int previous = editor->selected_entity;
+	if (kind == NB_RESOURCE_KIND_PACKED_SCENE) {
+		editor_create_scene_instance(editor, engine, path, NB_ENTITY_INVALID);
+	}
+	else if (kind == NB_RESOURCE_KIND_MESH || kind == NB_RESOURCE_KIND_MATERIAL) {
+		editor_create_node(editor, engine, NB_ENTITY_INVALID, "MeshInstance3D");
+		node = scene_get_node(engine->scene_graph, editor->selected_entity);
+		if (node) {
+			editor_picker_kind_t picker = kind == NB_RESOURCE_KIND_MESH ? NB_EDITOR_PICKER_MESH : NB_EDITOR_PICKER_MATERIAL;
+			editor_assign_asset(editor, engine, node, picker, path);
+		}
+	}
+	else if (kind == NB_RESOURCE_KIND_SCRIPT) {
+		editor_create_node(editor, engine, NB_ENTITY_INVALID, "Node3D");
+		node = scene_get_node(engine->scene_graph, editor->selected_entity);
+		if (node) { editor_assign_asset(editor, engine, node, NB_EDITOR_PICKER_SCRIPT, path); }
+	}
+	else {
+		editor_set_status(editor, "unsupported drop type");
+		return;
+	}
+	if (editor->selected_entity == previous) { return; }
+	node = scene_get_node(engine->scene_graph, editor->selected_entity);
+	if (!node || !(node->components & NB_NODE_COMPONENT_TRANSFORM)) { return; }
+	node->transform.position = pos;
+	editor->rename_entity = NB_ENTITY_INVALID;
+	editor->rename_focus = 0;
+	engine->scene_doc.dirty = 1;
+	editor_set_status(editor, "asset dropped");
 }
 
 static void editor_duplicate_node(editor_t* editor, engine_t* engine, unsigned int id) {
@@ -4373,21 +4501,12 @@ static void editor_tres_next_ext_id(editor_tres_state_t* state, const char* pref
 	snprintf(out, cap, "%d_%s", index, prefix);
 }
 
-static int editor_apply_tres_picker_selection(editor_t* editor, engine_t* engine, const char* path) {
+static int editor_apply_tres_asset(editor_t* editor, engine_t* engine, const char* path, int palette, int ext_index) {
 	if (!editor || !engine || !path || !path[0]) { return 0; }
 	editor_tres_state_t* state = &editor->inspector_tres;
-	int palette = editor->picker_target == NB_EDITOR_PICKER_TARGET_TRES_PALETTE;
 	const char* type = palette ? "Palette" : "Texture2D";
 	const char* prefix = palette ? "pal" : "tex";
-	int ext_index = -1;
-	if (editor->tres_pick_ext_index >= 0 && editor->tres_pick_ext_index < state->ext_count) {
-		ext_index = editor->tres_pick_ext_index;
-	}
-	else {
-		for (int i = 0; i < state->ext_count; i++) {
-			if (strcmp(state->ext[i].type, type) == 0) { ext_index = i; break; }
-		}
-	}
+	if (ext_index >= 0 && ext_index >= state->ext_count) { ext_index = -1; }
 	if (ext_index < 0) {
 		if (state->ext_count >= NB_EDITOR_INSPECTOR_TRES_EXT_MAX) {
 			editor_set_status(editor, "ext resources full");
@@ -4416,6 +4535,75 @@ static int editor_apply_tres_picker_selection(editor_t* editor, engine_t* engine
 	if (editor->inspector_kind != NB_EDITOR_INSPECTOR_TRES || !editor->inspector_path[0]) { return 0; }
 	editor_inspector_save_tres(editor);
 	return !editor->inspector_dirty;
+}
+
+static int editor_apply_tres_picker_selection(editor_t* editor, engine_t* engine, const char* path) {
+	if (!editor || !engine || !path || !path[0]) { return 0; }
+	editor_tres_state_t* state = &editor->inspector_tres;
+	int palette = editor->picker_target == NB_EDITOR_PICKER_TARGET_TRES_PALETTE;
+	const char* type = palette ? "Palette" : "Texture2D";
+	int ext_index = -1;
+	if (editor->tres_pick_ext_index >= 0 && editor->tres_pick_ext_index < state->ext_count) {
+		ext_index = editor->tres_pick_ext_index;
+	}
+	else {
+		for (int i = 0; i < state->ext_count; i++) {
+			if (strcmp(state->ext[i].type, type) == 0) { ext_index = i; break; }
+		}
+	}
+	return editor_apply_tres_asset(editor, engine, path, palette, ext_index);
+}
+
+static int editor_dnd_apply_inspector(editor_t* editor, engine_t* engine, editor_dnd_target_t target, const char* path, int ext_index) {
+	if (!editor || !engine || !path || !*path) { return 0; }
+	nb_resource_kind_t kind = editor_dnd_kind_for_path(path);
+	if (target == NB_EDITOR_DND_INSPECTOR_TEXTURE) {
+		if (!editor_dnd_accepts(kind, NB_RESOURCE_KIND_TEXTURE)) {
+			editor_set_status(editor, "incompatible resource");
+			return 0;
+		}
+		int applied = editor_apply_tres_asset(editor, engine, path, 0, ext_index);
+		editor_set_status(editor, applied ? "texture assigned" : "texture assign failed");
+		return applied;
+	}
+	if (target == NB_EDITOR_DND_INSPECTOR_PALETTE) {
+		if (!editor_dnd_accepts(kind, NB_RESOURCE_KIND_PALETTE)) {
+			editor_set_status(editor, "incompatible resource");
+			return 0;
+		}
+		int applied = editor_apply_tres_asset(editor, engine, path, 1, ext_index);
+		editor_set_status(editor, applied ? "palette assigned" : "palette assign failed");
+		return applied;
+	}
+	editor_picker_kind_t picker = NB_EDITOR_PICKER_MESH;
+	nb_resource_kind_t expected = NB_RESOURCE_KIND_MESH;
+	if (target == NB_EDITOR_DND_INSPECTOR_MATERIAL) {
+		picker = NB_EDITOR_PICKER_MATERIAL;
+		expected = NB_RESOURCE_KIND_MATERIAL;
+	}
+	else if (target == NB_EDITOR_DND_INSPECTOR_SCRIPT) {
+		picker = NB_EDITOR_PICKER_SCRIPT;
+		expected = NB_RESOURCE_KIND_SCRIPT;
+	}
+	if (!editor_dnd_accepts(kind, expected)) {
+		editor_set_status(editor, "incompatible resource");
+		return 0;
+	}
+	if (!engine->scene_graph || editor->selected_entity == NB_ENTITY_INVALID) {
+		editor_set_status(editor, "no node selected");
+		return 0;
+	}
+	node_t* node = scene_get_node(engine->scene_graph, editor->selected_entity);
+	if (!node) {
+		editor_set_status(editor, "no node selected");
+		return 0;
+	}
+	editor_history_push(editor, engine);
+	if (!editor_assign_asset(editor, engine, node, picker, path)) {
+		editor_undo(editor, engine);
+		return 0;
+	}
+	return 1;
 }
 
 static void editor_apply_picker_selection(editor_t* editor, engine_t* engine) {
@@ -4682,6 +4870,8 @@ static void editor_draw_hierarchy(editor_t* editor, engine_t* engine, int win_w,
 			if (node && node->child_count > 0 && !(node->components & NB_NODE_COMPONENT_SCENE_INSTANCE)) { x += 18.0f; }
 			float y = rows.rows[i].rect.y + (rows.rows[i].rect.h - 16.0f) * 0.5f;
 			editor_draw_node_icon(editor, ctx, nk_rect(x, y, 16.0f, 16.0f), rows.rows[i].icon);
+			float row[4] = { rows.rows[i].rect.x, rows.rows[i].rect.y, rows.rows[i].rect.w, rows.rows[i].rect.h };
+			editor_dnd_highlight(editor, ctx, row, NB_EDITOR_DND_HIERARCHY);
 		}
 		editor_draw_hierarchy_context_menu(editor, engine);
 		editor->hierarchy_row_rect_count = rows.count < NB_SCENE_UI_ROW_CAPACITY ? rows.count : NB_SCENE_UI_ROW_CAPACITY;
@@ -4775,8 +4965,13 @@ static void editor_inspector_resource_button(editor_t* editor, engine_t* engine,
 		rect[1] = bounds.y;
 		rect[2] = bounds.w;
 		rect[3] = bounds.h;
+		editor_dnd_target_t target = NB_EDITOR_DND_NONE;
+		if (kind == NB_EDITOR_PICKER_MESH) { target = NB_EDITOR_DND_INSPECTOR_MESH; }
+		else if (kind == NB_EDITOR_PICKER_MATERIAL) { target = NB_EDITOR_DND_INSPECTOR_MATERIAL; }
+		else if (kind == NB_EDITOR_PICKER_SCRIPT) { target = NB_EDITOR_DND_INSPECTOR_SCRIPT; }
+		editor_dnd_highlight(editor, ctx, rect, target);
 	}
-	if (nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, bounds)) {
+	if (nk_input_is_mouse_pressed(&ctx->input, NK_BUTTON_LEFT) && nk_input_is_mouse_hovering_rect(&ctx->input, bounds)) {
 		if ((kind == NB_EDITOR_PICKER_SCRIPT || kind == NB_EDITOR_PICKER_MATERIAL) && editor_inspector_edit_resource(editor, engine, kind, path)) {
 			return;
 		}
@@ -4950,7 +5145,7 @@ static void editor_inspector_draw_clut(editor_t* editor, struct nk_context* ctx,
 	editor_inspector_draw_color_picker(editor, ctx);
 }
 
-static void editor_inspector_tres_ref_button(editor_t* editor, struct nk_context* ctx, const char* label, const char* id, editor_picker_kind_t kind, editor_picker_target_t target) {
+static void editor_inspector_tres_ref_button(editor_t* editor, struct nk_context* ctx, const char* label, const char* id, editor_picker_kind_t kind, editor_picker_target_t target, float* rect) {
 	float widths[2];
 	float avail = ctx->current->layout->bounds.w;
 	if (avail < 140.0f) { avail = 140.0f; }
@@ -4966,7 +5161,16 @@ static void editor_inspector_tres_ref_button(editor_t* editor, struct nk_context
 	snprintf(caption, sizeof(caption), "%.*s", (int)sizeof(caption) - 1, path);
 	struct nk_rect bounds = nk_layout_widget_bounds(ctx);
 	nk_button_label(ctx, caption);
-	if (!nk_input_is_mouse_click_in_rect(&ctx->input, NK_BUTTON_LEFT, bounds)) { return; }
+	if (rect) {
+		rect[0] = bounds.x;
+		rect[1] = bounds.y;
+		rect[2] = bounds.w;
+		rect[3] = bounds.h;
+		editor_dnd_target_t dnd_target = target == NB_EDITOR_PICKER_TARGET_TRES_PALETTE ? NB_EDITOR_DND_INSPECTOR_PALETTE : NB_EDITOR_DND_INSPECTOR_TEXTURE;
+		editor_dnd_highlight(editor, ctx, rect, dnd_target);
+	}
+	if (!nk_input_is_mouse_pressed(&ctx->input, NK_BUTTON_LEFT) || !nk_input_is_mouse_hovering_rect(&ctx->input, bounds)) { return; }
+	editor_dnd_reset(&editor->dnd);
 	editor->resource_fork.open = 0;
 	editor->dialog_kind = NB_EDITOR_DIALOG_NONE;
 	editor->picker.open = 1;
@@ -4993,8 +5197,8 @@ static void editor_inspector_draw_tres(editor_t* editor, struct nk_context* ctx,
 		nk_layout_row_dynamic(ctx, 20, 1);
 		nk_label(ctx, "Resource", NK_TEXT_LEFT);
 		if (editor_inspector_labeled_edit(ctx, "Name", state->name, (int)sizeof(state->name))) { editor_inspector_mark_dirty(editor); }
-		editor_inspector_tres_ref_button(editor, ctx, "Texture", state->texture, NB_EDITOR_PICKER_TEXTURE, NB_EDITOR_PICKER_TARGET_TRES_TEXTURE);
-		editor_inspector_tres_ref_button(editor, ctx, "Palette", state->palette, NB_EDITOR_PICKER_PALETTE, NB_EDITOR_PICKER_TARGET_TRES_PALETTE);
+		editor_inspector_tres_ref_button(editor, ctx, "Texture", state->texture, NB_EDITOR_PICKER_TEXTURE, NB_EDITOR_PICKER_TARGET_TRES_TEXTURE, editor->inspector_tres_texture_rect);
+		editor_inspector_tres_ref_button(editor, ctx, "Palette", state->palette, NB_EDITOR_PICKER_PALETTE, NB_EDITOR_PICKER_TARGET_TRES_PALETTE, editor->inspector_tres_palette_rect);
 		static const char* const blend_items[] = { "none", "alpha_50", "add", "subtract", "add_quarter" };
 		static const char* const shade_items[] = { "flat", "gouraud" };
 		float widths[2];
@@ -5110,6 +5314,8 @@ static void editor_draw_inspector(editor_t* editor, engine_t* engine, int win_w,
 	editor->inspector_mesh_rect[0] = 0.0f;
 	editor->inspector_material_rect[0] = 0.0f;
 	editor->inspector_script_rect[0] = 0.0f;
+	editor->inspector_tres_texture_rect[0] = 0.0f;
+	editor->inspector_tres_palette_rect[0] = 0.0f;
 	int panel_w = 340;
 	int panel_x = win_w - panel_w - 10;
 	int panel_y = 10;
@@ -5766,6 +5972,7 @@ void editor_update(editor_t* editor, engine_t* engine) {
 
 	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
 	nk_input_end(ctx);
+	editor_explorer_handle_drop(editor, engine, ctx);
 	editor_inspector_autosave(editor, 0);
 
 	editor->want_capture_mouse = nk_item_is_any_active(ctx) || nk_window_is_any_hovered(ctx);
@@ -5871,7 +6078,6 @@ void editor_update(editor_t* editor, engine_t* engine) {
 	editor_draw_create_popup(editor, engine, win_w, win_h);
 	editor_draw_picker(editor, engine, win_w, win_h);
 	editor_draw_resource_fork(editor, win_w, win_h);
-	editor_explorer_handle_drop(editor, engine, ctx);
 
 	editor_update_camera(editor, engine, 1.0f / 60.0f);
 	editor_apply_gizmo(editor, engine);
@@ -6084,9 +6290,42 @@ static void editor_draw_gizmo_sdl(editor_t* editor, engine_t* engine) {
 	}
 }
 
+static void editor_draw_drag_ghost_sdl(editor_t* editor, engine_t* engine) {
+	if (!editor || !engine) { return; }
+	if (!editor->dnd.active || !editor->dnd.path[0]) { return; }
+	struct nk_context* ctx = (struct nk_context*)editor->nk_ctx;
+	if (!ctx || !nk_input_is_mouse_down(&ctx->input, NK_BUTTON_LEFT)) { return; }
+	SDL_Renderer* r = (SDL_Renderer*)platform_renderer(&engine->platform);
+	if (!r) { return; }
+	int mx = (int)ctx->input.mouse.pos.x;
+	int my = (int)ctx->input.mouse.pos.y;
+	SDL_Rect box = { mx + 12, my + 12, 132, 28 };
+	if (box.x + box.w > editor->win_w) { box.x = mx - box.w - 12; }
+	if (box.y + box.h > editor->win_h) { box.y = my - box.h - 12; }
+	if (box.x < 0) { box.x = 0; }
+	if (box.y < 0) { box.y = 0; }
+	SDL_BlendMode blend;
+	SDL_GetRenderDrawBlendMode(r, &blend);
+	SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+	SDL_SetRenderDrawColor(r, 70, 110, 160, 150);
+	SDL_RenderFillRect(r, &box);
+	SDL_SetRenderDrawColor(r, 130, 180, 230, 220);
+	SDL_RenderDrawRect(r, &box);
+	if (editor->ui_icons_ready) {
+		int type = editor_explorer_type_index(editor->dnd.path);
+		void* texture = editor->ui_icons_large[editor_explorer_icon_id(type)];
+		if (texture) {
+			SDL_Rect icon = { box.x + 5, box.y + 5, 18, 18 };
+			SDL_RenderCopy(r, (SDL_Texture*)texture, NULL, &icon);
+		}
+	}
+	SDL_SetRenderDrawBlendMode(r, blend);
+}
+
 void editor_render(editor_t* editor, engine_t* engine) {
 	if (!editor_enabled(editor)) { return; }
 	nk_sdl_render(NK_ANTI_ALIASING_ON);
 	editor_draw_node_helpers_sdl(editor, engine);
 	editor_draw_gizmo_sdl(editor, engine);
+	editor_draw_drag_ghost_sdl(editor, engine);
 }
