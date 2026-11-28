@@ -8,6 +8,7 @@
 #include "core/log.h"
 #include "core/platform.h"
 #include "editor/editor.h"
+#include "editor/launcher.h"
 #include "physics/collision.h"
 #include "render/framebuffer.h"
 #include "render/renderer.h"
@@ -62,6 +63,7 @@ typedef struct engine_t {
 	engine_clock_t clock;
 	hud_t hud;
 	editor_t editor;
+	launcher_t launcher;
 	log_t log;
 	int assets_ready;
 	int script_vm_ready;

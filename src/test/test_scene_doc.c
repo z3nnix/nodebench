@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "core/engine.h"
+#include "render/primitives.h"
 #include "scene/scene_doc.h"
 
 static const char* bad_ref_scene =
@@ -15,6 +16,51 @@ static const char* bad_ref_scene =
 	"transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)\n"
 	"mesh = ExtResource(\"m\")\n"
 	"material = ExtResource(\"m\")\n";
+
+static const char* unused_broken_ext_scene =
+	"[gd_scene load_steps=2 format=3]\n"
+	"[ext_resource type=\"Mesh\" path=\"res://primitive/triangle\" id=\"old_triangle\"]\n"
+	"[node name=\"Unused\" type=\"Node3D\" parent=\".\"]\n";
+
+static const char* used_broken_ext_scene =
+	"[gd_scene load_steps=2 format=3]\n"
+	"[ext_resource type=\"Mesh\" path=\"res://primitive/triangle\" id=\"old_triangle\"]\n"
+	"[node name=\"Used\" type=\"MeshInstance3D\" parent=\".\"]\n"
+	"transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)\n"
+	"mesh = ExtResource(\"old_triangle\")\n";
+
+static const char* primitive_scene =
+	"[gd_scene load_steps=3 format=3]\n"
+	"[ext_resource type=\"Mesh\" path=\"res://primitive/square\" id=\"mesh_prim_square\"]\n"
+	"[ext_resource type=\"NBPS1Material\" path=\"res://primitive/default.tres\" id=\"mat_prim_default\"]\n"
+	"[node name=\"Primitive\" type=\"MeshInstance3D\" parent=\".\"]\n"
+	"transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)\n"
+	"mesh = ExtResource(\"mesh_prim_square\")\n"
+	"material = ExtResource(\"mat_prim_default\")\n";
+
+static const char* helpers_scene =
+	"[gd_scene load_steps=1 format=3]\n"
+	"[node name=\"Cam\" type=\"Camera3D\" parent=\".\"]\n"
+	"transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 6, 7)\n"
+	"fov = 70.000000\n"
+	"target = Vector3(1.000000, 2.000000, 3.000000)\n"
+	"[node name=\"Sun\" type=\"DirectionalLight3D\" parent=\".\"]\n"
+	"transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 2, 3)\n"
+	"direction = Vector3(0.000000, -1.000000, 0.000000)\n";
+
+static const char* missing_material_scene =
+	"[gd_scene load_steps=2 format=3]\n"
+	"[ext_resource type=\"Mesh\" path=\"res://primitive/square\" id=\"mesh_prim_square\"]\n"
+	"[node name=\"NoMat\" type=\"MeshInstance3D\" parent=\".\"]\n"
+	"transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)\n"
+	"mesh = ExtResource(\"mesh_prim_square\")\n";
+
+static const char* instance_scene =
+	"[gd_scene load_steps=2 format=3]\n"
+	"[ext_resource type=\"PackedScene\" path=\"res://scenes/level01.tscn\" id=\"packed_level\"]\n"
+	"[node name=\"LevelInstance\" type=\"Node3D\" parent=\".\"]\n"
+	"transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)\n"
+	"instance = ExtResource(\"packed_level\")\n";
 
 static node_t* scene_doc_test_node(scene_t* scene, const char* name) {
 	entity_id_t id = scene_find_node(scene, name);
@@ -249,6 +295,161 @@ int main(void) {
 		printf("fail typed ref rejection\n");
 		return 1;
 	}
+
+	scene_doc_t unused_doc;
+	scene_t unused_scene;
+	scene_doc_init(&unused_doc);
+	if (scene_doc_load_from_buffer(&unused_doc, "unused.tscn", unused_broken_ext_scene, strlen(unused_broken_ext_scene), &engine, &unused_scene) != NB_RESULT_OK) {
+		printf("fail unused broken ext tolerance\n");
+		return 1;
+	}
+	scene_shutdown(&unused_scene);
+
+	scene_doc_t used_doc;
+	scene_t used_scene;
+	scene_doc_init(&used_doc);
+	if (scene_doc_load_from_buffer(&used_doc, "used.tscn", used_broken_ext_scene, strlen(used_broken_ext_scene), &engine, &used_scene) == NB_RESULT_OK) {
+		printf("fail used broken ext rejection\n");
+		scene_shutdown(&used_scene);
+		return 1;
+	}
+	scene_shutdown(&used_scene);
+
+	for (int i = 0; i < mesh_primitive_count(); i++) {
+		mesh_t primitive_mesh;
+		if (!mesh_create_primitive(mesh_primitive_name(i), &primitive_mesh) || primitive_mesh.vertex_count < 3 || primitive_mesh.triangle_count < 1) {
+			printf("fail primitive mesh %s\n", mesh_primitive_name(i));
+			return 1;
+		}
+		mesh_destroy(&primitive_mesh);
+	}
+
+	scene_doc_t primitive_doc;
+	scene_t primitive_scene_data;
+	scene_doc_init(&primitive_doc);
+	if (scene_doc_load_from_buffer(&primitive_doc, "primitive.tscn", primitive_scene, strlen(primitive_scene), &engine, &primitive_scene_data) != NB_RESULT_OK) {
+		printf("fail primitive scene load\n");
+		return 1;
+	}
+	node_t* primitive = scene_doc_test_node(&primitive_scene_data, "Primitive");
+	if (!primitive || primitive->mesh_renderer.mesh == NB_RESOURCE_INVALID_ID || primitive->mesh_renderer.material == NB_RESOURCE_INVALID_ID) {
+		printf("fail primitive refs\n");
+		scene_shutdown(&primitive_scene_data);
+		return 1;
+	}
+	const scene_doc_ext_t* primitive_mesh = scene_doc_find_ext(&primitive_doc, NB_RESOURCE_KIND_MESH, primitive->mesh_renderer.mesh);
+	const scene_doc_ext_t* primitive_material = scene_doc_find_ext(&primitive_doc, NB_RESOURCE_KIND_MATERIAL, primitive->mesh_renderer.material);
+	if (!primitive_mesh || strcmp(primitive_mesh->path, "res://primitive/square") != 0 || !primitive_material || strcmp(primitive_material->path, "res://primitive/default.tres") != 0) {
+		printf("fail primitive ext paths\n");
+		scene_shutdown(&primitive_scene_data);
+		return 1;
+	}
+	const material_t* primitive_material_res = resource_get_material(&engine.resources, primitive->mesh_renderer.material);
+	const texture_t* primitive_texture = primitive_material_res ? resource_get_texture(&engine.resources, primitive_material_res->texture) : NULL;
+	if (!primitive_texture || primitive_texture->width != 64 || primitive_texture->height != 64 || primitive_texture->format != NB_TEXTURE_4BIT) {
+		printf("fail primitive default texture\n");
+		scene_shutdown(&primitive_scene_data);
+		return 1;
+	}
+	scene_doc_ext_t extra;
+	memset(&extra, 0, sizeof(extra));
+	snprintf(extra.id, sizeof(extra.id), "%s", "mesh_prim_sphere");
+	snprintf(extra.type, sizeof(extra.type), "%s", "Mesh");
+	snprintf(extra.path, sizeof(extra.path), "%s", "res://primitive/sphere");
+	extra.kind = NB_RESOURCE_KIND_MESH;
+	extra.handle = primitive->mesh_renderer.mesh;
+	if (!scene_doc_add_ext(&primitive_doc, &extra) || scene_doc_add_ext(&primitive_doc, &extra) || !scene_doc_find_ext_by_id(&primitive_doc, "mesh_prim_sphere")) {
+		printf("fail add ext\n");
+		scene_shutdown(&primitive_scene_data);
+		return 1;
+	}
+	char* primitive_data = NULL;
+	size_t primitive_size = 0;
+	if (scene_doc_save_to_buffer(&primitive_doc, &primitive_scene_data, &primitive_data, &primitive_size) != NB_RESULT_OK || !primitive_data ||
+		!strstr(primitive_data, "res://primitive/square") || !strstr(primitive_data, "res://primitive/default.tres") || strstr(primitive_data, "res://primitive/sphere")) {
+		printf("fail primitive roundtrip\n");
+		free(primitive_data);
+		scene_shutdown(&primitive_scene_data);
+		return 1;
+	}
+	free(primitive_data);
+	scene_shutdown(&primitive_scene_data);
+
+	scene_doc_t fallback_doc;
+	scene_t fallback_scene;
+	scene_doc_init(&fallback_doc);
+	if (scene_doc_load_from_buffer(&fallback_doc, "missing_material.tscn", missing_material_scene, strlen(missing_material_scene), &engine, &fallback_scene) != NB_RESULT_OK) {
+		printf("fail missing material scene load\n");
+		return 1;
+	}
+	node_t* fallback_node = scene_doc_test_node(&fallback_scene, "NoMat");
+	const scene_doc_ext_t* fallback_material = fallback_node ? scene_doc_find_ext(&fallback_doc, NB_RESOURCE_KIND_MATERIAL, fallback_node->mesh_renderer.material) : NULL;
+	if (!fallback_node || fallback_node->mesh_renderer.material == NB_RESOURCE_INVALID_ID || !fallback_material || strcmp(fallback_material->path, "res://primitive/default.tres") != 0) {
+		printf("fail missing material fallback\n");
+		scene_shutdown(&fallback_scene);
+		return 1;
+	}
+	char* fallback_data = NULL;
+	size_t fallback_size = 0;
+	if (scene_doc_save_to_buffer(&fallback_doc, &fallback_scene, &fallback_data, &fallback_size) != NB_RESULT_OK || !fallback_data || !strstr(fallback_data, "material = ExtResource(")) {
+		printf("fail missing material save\n");
+		free(fallback_data);
+		scene_shutdown(&fallback_scene);
+		return 1;
+	}
+	free(fallback_data);
+	scene_shutdown(&fallback_scene);
+
+	scene_doc_t instance_doc;
+	scene_t instance_scene_data;
+	scene_doc_init(&instance_doc);
+	if (scene_doc_load_from_buffer(&instance_doc, "instance.tscn", instance_scene, strlen(instance_scene), &engine, &instance_scene_data) != NB_RESULT_OK) {
+		printf("fail instance scene load\n");
+		return 1;
+	}
+	node_t* instance_node = scene_doc_test_node(&instance_scene_data, "LevelInstance");
+	node_t* instance_child = scene_doc_test_node(&instance_scene_data, "Player");
+	if (!instance_node || !(instance_node->components & NB_NODE_COMPONENT_SCENE_INSTANCE) || !instance_child || !(instance_child->components & NB_NODE_COMPONENT_INSTANCE_CHILD) || instance_child->instance_owner != instance_node->id) {
+		printf("fail instance nodes\n");
+		scene_shutdown(&instance_scene_data);
+		return 1;
+	}
+	char* instance_data = NULL;
+	size_t instance_size = 0;
+	if (scene_doc_save_to_buffer(&instance_doc, &instance_scene_data, &instance_data, &instance_size) != NB_RESULT_OK || !instance_data ||
+		!strstr(instance_data, "type=\"PackedScene\"") || !strstr(instance_data, "instance = ExtResource(") || strstr(instance_data, "[node name=\"Player\"")) {
+		printf("fail instance save\n");
+		free(instance_data);
+		scene_shutdown(&instance_scene_data);
+		return 1;
+	}
+	free(instance_data);
+	scene_shutdown(&instance_scene_data);
+
+	scene_doc_t helpers_doc;
+	scene_t helpers_scene_data;
+	scene_doc_init(&helpers_doc);
+	if (scene_doc_load_from_buffer(&helpers_doc, "helpers.tscn", helpers_scene, strlen(helpers_scene), &engine, &helpers_scene_data) != NB_RESULT_OK) {
+		printf("fail helpers scene load\n");
+		return 1;
+	}
+	scene_update_world_transforms(&helpers_scene_data);
+	scene_rebuild_cache(&helpers_scene_data);
+	node_t* helper_camera = scene_doc_test_node(&helpers_scene_data, "Cam");
+	node_t* helper_light = scene_doc_test_node(&helpers_scene_data, "Sun");
+	if (!helper_camera || !(helper_camera->components & NB_NODE_COMPONENT_CAMERA) || !helper_light ||
+		!(helper_light->components & NB_NODE_COMPONENT_LIGHT) || !(helper_light->components & NB_NODE_COMPONENT_TRANSFORM)) {
+		printf("fail helper components\n");
+		scene_shutdown(&helpers_scene_data);
+		return 1;
+	}
+	if (fabsf(helper_camera->world_position.x - 5.0f) > 0.001f || fabsf(helper_camera->camera.fov - 70.0f) > 0.001f ||
+		fabsf(helper_light->world_position.z - 3.0f) > 0.001f || fabsf(helper_light->light.direction.y + 1.0f) > 0.001f) {
+		printf("fail helper data\n");
+		scene_shutdown(&helpers_scene_data);
+		return 1;
+	}
+	scene_shutdown(&helpers_scene_data);
 
 	scene_shutdown(&bad_scene);
 	scene_shutdown(&uuid_scene_data);

@@ -1,6 +1,15 @@
+#define _XOPEN_SOURCE 700
+
 #include <SDL2/SDL.h>
+#include <ctype.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "core/platform.h"
 
@@ -294,4 +303,80 @@ const char* platform_scancode_name(platform_scancode_t scancode) {
 	if (scancode <= 0 || scancode >= NB_PLATFORM_SCANCODE_COUNT) { return ""; }
 	const char* name = SDL_GetScancodeName((SDL_Scancode)scancode);
 	return name ? name : "";
+}
+
+static int platform_spawn_open(const char* command, const char* first_arg, const char* path) {
+	if (!command || !path) { return 0; }
+	pid_t parent = fork();
+	if (parent < 0) { return 0; }
+	if (parent == 0) {
+		setsid();
+		pid_t child = fork();
+		if (child < 0) { _exit(127); }
+		if (child > 0) { _exit(0); }
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, STDOUT_FILENO);
+			dup2(devnull, STDERR_FILENO);
+			if (devnull > STDERR_FILENO) { close(devnull); }
+		}
+		if (first_arg && first_arg[0]) {
+			execlp(command, command, first_arg, path, (char*)NULL);
+		}
+		else {
+			execlp(command, command, path, (char*)NULL);
+		}
+		_exit(127);
+	}
+	int status = 0;
+	waitpid(parent, &status, 0);
+	return 1;
+}
+
+static void platform_file_url(char* out, size_t size, const char* path) {
+	static const char hex[] = "0123456789ABCDEF";
+	size_t pos = 0;
+	pos += (size_t)snprintf(out, size, "file://");
+	for (const unsigned char* p = (const unsigned char*)path; *p && pos + 3 < size; p++) {
+		if (isalnum(*p) || *p == '/' || *p == '-' || *p == '.' || *p == '_' || *p == '~') {
+			out[pos++] = (char)*p;
+		}
+		else {
+			out[pos++] = '%';
+			out[pos++] = hex[*p >> 4];
+			out[pos++] = hex[*p & 15];
+		}
+	}
+	out[pos < size ? pos : size - 1] = '\0';
+}
+
+int platform_open_directory(const char* path) {
+	if (!path || !*path) { return 0; }
+	char abs[PATH_MAX];
+	if (!realpath(path, abs)) {
+		if (path[0] == '/') {
+			snprintf(abs, sizeof(abs), "%.*s", (int)sizeof(abs) - 1, path);
+		}
+		else {
+			char cwd[PATH_MAX];
+			if (!getcwd(cwd, sizeof(cwd))) { return 0; }
+			size_t cwd_len = strlen(cwd);
+			size_t remain = sizeof(abs) - cwd_len - 1;
+			if (remain <= 1) { return 0; }
+			size_t path_len = strlen(path);
+			if (path_len >= remain) { path_len = remain - 1; }
+			memcpy(abs, cwd, cwd_len);
+			abs[cwd_len] = '/';
+			memcpy(abs + cwd_len + 1, path, path_len);
+			abs[cwd_len + 1 + path_len] = '\0';
+		}
+	}
+	struct stat st;
+	if (stat(abs, &st) != 0 || !S_ISDIR(st.st_mode)) { return 0; }
+	char url[PATH_MAX * 4];
+	platform_file_url(url, sizeof(url), abs);
+	if (SDL_OpenURL(url) == 0) { return 1; }
+	if (platform_spawn_open("xdg-open", NULL, abs)) { return 1; }
+	if (platform_spawn_open("gio", "open", abs)) { return 1; }
+	return 0;
 }

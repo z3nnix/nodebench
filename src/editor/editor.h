@@ -3,6 +3,7 @@
 
 #include "core/config.h"
 #include "editor/editor_fs.h"
+#include "editor/editor_icons.h"
 #include "scene/scene.h"
 
 typedef struct engine_t engine_t;
@@ -15,6 +16,8 @@ typedef enum {
 } editor_tool_t;
 
 #define NB_EDITOR_UNDO_LIMIT 64
+#define NB_EDITOR_CREATE_MAX 4
+#define NB_EDITOR_PICKER_MAX 128
 #define NB_EDITOR_INSPECTOR_CLUT_MAX 256
 #define NB_EDITOR_INSPECTOR_TRES_EXT_MAX 64
 #define NB_EDITOR_INSPECTOR_TRES_LINE_MAX 512
@@ -29,7 +32,9 @@ typedef enum {
 	NB_EDITOR_DIALOG_DISCARD = 5,
 	NB_EDITOR_DIALOG_NEW_FOLDER = 6,
 	NB_EDITOR_DIALOG_OPEN_PROJECT = 7,
-	NB_EDITOR_DIALOG_NEW_PROJECT = 8
+	NB_EDITOR_DIALOG_NEW_PROJECT = 8,
+	NB_EDITOR_DIALOG_NEW_SCRIPT = 9,
+	NB_EDITOR_DIALOG_NEW_TRES = 10
 } editor_dialog_kind_t;
 
 typedef enum {
@@ -44,6 +49,51 @@ typedef enum {
 	NB_EDITOR_COLOR_TARGET_TRES = 1
 } editor_color_target_t;
 
+typedef enum {
+	NB_EDITOR_PICKER_MESH = 0,
+	NB_EDITOR_PICKER_MATERIAL = 1,
+	NB_EDITOR_PICKER_SCRIPT = 2,
+	NB_EDITOR_PICKER_TEXTURE = 3,
+	NB_EDITOR_PICKER_PALETTE = 4
+} editor_picker_kind_t;
+
+typedef enum {
+	NB_EDITOR_PICKER_TARGET_SCENE = 0,
+	NB_EDITOR_PICKER_TARGET_TRES_TEXTURE = 1,
+	NB_EDITOR_PICKER_TARGET_TRES_PALETTE = 2
+} editor_picker_target_t;
+
+typedef struct {
+	int open;
+	char search[128];
+	int selected;
+	unsigned int parent;
+	float rect[4];
+	float row_rects[NB_EDITOR_CREATE_MAX][4];
+	int row_count;
+	unsigned int scroll_x;
+	unsigned int scroll_y;
+} editor_create_state_t;
+
+typedef struct {
+	int open;
+	editor_picker_kind_t kind;
+	char search[128];
+	int selected;
+	float rect[4];
+	int builtin_count;
+	char paths[NB_EDITOR_PICKER_MAX][NB_EDITOR_FS_PATH_MAX];
+	char labels[NB_EDITOR_PICKER_MAX][128];
+	int count;
+	float row_rects[NB_EDITOR_PICKER_MAX][4];
+} editor_picker_state_t;
+
+typedef struct {
+	int open;
+	editor_picker_kind_t kind;
+	unsigned int entity;
+} editor_resource_fork_t;
+
 typedef struct {
 	int count;
 	unsigned char r[NB_EDITOR_INSPECTOR_CLUT_MAX];
@@ -52,8 +102,16 @@ typedef struct {
 } editor_clut_state_t;
 
 typedef struct {
+	char id[64];
+	char type[32];
+	char path[NB_EDITOR_FS_PATH_MAX];
+	char uuid[64];
+	char extra[NB_EDITOR_INSPECTOR_TRES_LINE_MAX];
+} editor_tres_ext_t;
+
+typedef struct {
 	char header[NB_EDITOR_INSPECTOR_TRES_LINE_MAX];
-	char ext[NB_EDITOR_INSPECTOR_TRES_EXT_MAX][NB_EDITOR_INSPECTOR_TRES_LINE_MAX];
+	editor_tres_ext_t ext[NB_EDITOR_INSPECTOR_TRES_EXT_MAX];
 	int ext_count;
 	char name[64];
 	char texture[64];
@@ -63,6 +121,10 @@ typedef struct {
 	int fog_enabled;
 	float tint[4];
 	int transparent_index;
+	char unknown[NB_EDITOR_INSPECTOR_TRES_EXT_MAX][NB_EDITOR_INSPECTOR_TRES_LINE_MAX];
+	int unknown_count;
+	material_id runtime_material;
+	texture_id runtime_texture;
 } editor_tres_state_t;
 
 typedef struct {
@@ -150,7 +212,14 @@ typedef struct {
 	unsigned int selected_entity;
 	char status[128];
 	char scene_path[256];
-	char new_node_name[64];
+	editor_create_state_t create;
+	editor_picker_state_t picker;
+	editor_resource_fork_t resource_fork;
+	editor_picker_target_t picker_target;
+	int tres_pick_ext_index;
+	float inspector_mesh_rect[4];
+	float inspector_material_rect[4];
+	float inspector_script_rect[4];
 	float camera_pos[3];
 	float camera_yaw;
 	float camera_pitch;
@@ -169,6 +238,12 @@ typedef struct {
 	int gizmo_drag_mouse_x;
 	int gizmo_drag_mouse_y;
 	void* tool_textures[4];
+	void* ui_icons[NB_EDITOR_ICON_COUNT];
+	void* ui_icons_large[NB_EDITOR_ICON_COUNT];
+	void* ui_font_base;
+	void* ui_font_semibold;
+	void* ui_font_heading;
+	int ui_icons_ready;
 	editor_snapshot_t* undo;
 	int undo_count;
 	int undo_capacity;
@@ -207,6 +282,10 @@ typedef struct {
 	unsigned int hierarchy_drop_row_entity;
 	int hierarchy_drop_index;
 	int hierarchy_drop_zone;
+	float hierarchy_panel_rect[4];
+	float hierarchy_row_rects[NB_SCENE_UI_ROW_CAPACITY][4];
+	unsigned int hierarchy_row_entities[NB_SCENE_UI_ROW_CAPACITY];
+	int hierarchy_row_rect_count;
 	char inspector_name[64];
 	unsigned int inspector_name_entity;
 	editor_inspector_kind_t inspector_kind;
@@ -235,6 +314,7 @@ typedef struct {
 	editor_explorer_t explorer;
 	char dialog_path[NB_EDITOR_FS_PATH_MAX];
 	char dialog_dst[NB_EDITOR_FS_PATH_MAX];
+	char dialog_name[NB_EDITOR_FS_NAME_MAX];
 	char dialog_text[256];
 	char dialog_title[64];
 	int dialog_kind;
@@ -242,6 +322,8 @@ typedef struct {
 	void* nk_ctx;
 } editor_t;
 
+int editor_create_script_asset(editor_t* editor, engine_t* engine, const char* name, char* logical, size_t logical_cap);
+int editor_create_tres_asset(editor_t* editor, engine_t* engine, const char* name, char* logical, size_t logical_cap);
 int editor_init(editor_t* editor, engine_t* engine);
 void editor_shutdown(editor_t* editor, engine_t* engine);
 int editor_handle_event(editor_t* editor, const void* sdl_event);

@@ -141,6 +141,10 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	}
 	else { args = argv; }
 
+	if (config_cli_requests_launcher(argc, args) || !config_cli_selects_session(argc, args)) {
+		engine->launcher.active = 1;
+	}
+
 	char root[PATH_MAX];
 	root[0] = '\0';
 	config_resolve_project_root(argc, args, root, sizeof(root));
@@ -153,7 +157,7 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 
 	char config_path[PATH_MAX];
 	engine_join(config_path, sizeof(config_path), root, "project.ini");
-	if (access(config_path, F_OK) != 0) {
+	if (access(config_path, F_OK) != 0 && !engine->launcher.active) {
 		fprintf(stderr, "warning: project.ini not found; using defaults\n");
 	}
 	if (!config_load_file(&engine->config, "project.ini")) {
@@ -167,6 +171,10 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	if (args != argv) { free(args); }
 	if (cli_status == 2) { return NB_RESULT_HELP; }
 	if (cli_status == 0) { return NB_RESULT_ERROR_CONFIG; }
+	if (engine->launcher.active) {
+		snprintf(engine->config.mode, sizeof(engine->config.mode), "launcher");
+		engine->config.editor_enabled = 0;
+	}
 
 	if (!log_init(&engine->log, engine->config.log_file, engine->config.log_level)) { return NB_RESULT_ERROR_CONFIG; }
 
@@ -182,7 +190,7 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 	input_init(&engine->input, &engine->config);
 
 	platform_desc_t platform_desc = { "NodeBench", engine->config.width, engine->config.height, engine->config.window_width, engine->config.window_height, 0 };
-	if (strcmp(engine->config.mode, "editor") == 0) {
+	if (strcmp(engine->config.mode, "editor") == 0 || engine->launcher.active) {
 		if (platform_desc.window_width < 1280) { platform_desc.window_width = 1280; }
 		if (platform_desc.window_height < 720) { platform_desc.window_height = 720; }
 	}
@@ -205,6 +213,10 @@ nb_result_t engine_init(engine_t* engine, int argc, char** argv) {
 
 	else {
 		engine->editor_ready = 1;
+	}
+
+	if (engine->launcher.active && !launcher_init(&engine->launcher, engine)) {
+		engine_log(engine, "launcher unavailable");
 	}
 
 	resource_store_init(&engine->resources, engine->config.texture_vram_limit);
@@ -256,7 +268,7 @@ static void engine_apply_actions(engine_t* engine) {
 	input_state_t* input = &engine->input;
 	int changed = 0;
 
-	if (input_was_pressed(input, "quit")) { input->quit = 1; }
+	if (input_was_pressed(input, "quit") && !engine->editor.enabled) { input->quit = 1; }
 
 	if (input_was_pressed(input, "editor_toggle") && engine->editor_ready) {
 		engine->editor.enabled = !engine->editor.enabled;
@@ -369,6 +381,15 @@ void engine_update(engine_t* engine, float dt) {
 void engine_render(engine_t* engine, float alpha) {
 	if (!engine || !engine->platform_ready || !engine->framebuffer_ready || !engine->renderer_ready) { return; }
 
+	if (engine->launcher.active) {
+		SDL_Renderer* launcher_renderer = (SDL_Renderer*)platform_renderer(&engine->platform);
+		SDL_SetRenderDrawColor(launcher_renderer, 10, 14, 24, 255);
+		SDL_RenderClear(launcher_renderer);
+		launcher_render(&engine->launcher, engine);
+		SDL_RenderPresent(launcher_renderer);
+		return;
+	}
+
 	if (engine->scene.render) { engine->scene.render(engine, engine->scene.context, alpha); }
 
 	hud_draw(&engine->hud, &engine->framebuffer, &engine->config, engine->paused);
@@ -404,6 +425,7 @@ void engine_shutdown(engine_t* engine) {
 	if (engine->audio_ready) { audio_shutdown(&engine->audio); }
 	engine->audio_ready = 0;
 
+	if (engine->launcher.ready) { launcher_shutdown(&engine->launcher); }
 	if (engine->editor_ready) { editor_shutdown(&engine->editor, engine); }
 	if (engine->renderer_ready) { renderer_shutdown(&engine->renderer); }
 	if (engine->framebuffer_ready) { framebuffer_shutdown(&engine->framebuffer); }
@@ -419,6 +441,14 @@ void engine_shutdown(engine_t* engine) {
 	log_shutdown(&engine->log);
 }
 
+static int engine_handle_event(void* user, const void* event) {
+	engine_t* engine = (engine_t*)user;
+	if (!engine) { return 0; }
+	if (engine->launcher.active) { return launcher_handle_event(&engine->launcher, event); }
+	if (engine->editor_ready) { return editor_handle_event(&engine->editor, event); }
+	return 0;
+}
+
 nb_result_t engine_run(int argc, char** argv) {
 	engine_t engine;
 	nb_result_t result = engine_init(&engine, argc, argv);
@@ -429,26 +459,28 @@ nb_result_t engine_run(int argc, char** argv) {
 	}
 
 	engine_log(&engine, "mode=%s scene=%s", engine.config.mode, engine.config.scene_path);
-	if (strcmp(engine.config.mode, "editor") == 0) {
-		engine.config.editor_enabled = 1;
-		editor_app_register(&engine);
-	}
-	else {
-		demo_scene_register(&engine);
-	}
-	if (!engine.scene.init) {
-		engine_log(&engine, "scene is not registered");
-		engine_shutdown(&engine);
-		return NB_RESULT_ERROR_SCENE;
-	}
+	if (!engine.launcher.active) {
+		if (strcmp(engine.config.mode, "editor") == 0) {
+			engine.config.editor_enabled = 1;
+			editor_app_register(&engine);
+		}
+		else {
+			demo_scene_register(&engine);
+		}
+		if (!engine.scene.init) {
+			engine_log(&engine, "scene is not registered");
+			engine_shutdown(&engine);
+			return NB_RESULT_ERROR_SCENE;
+		}
 
-	result = engine.scene.init(&engine, &engine.scene.context);
-	if (result != NB_RESULT_OK) {
-		engine_log(&engine, "scene init failed: %s", nb_error_string(result));
-		engine_shutdown(&engine);
-		return result;
+		result = engine.scene.init(&engine, &engine.scene.context);
+		if (result != NB_RESULT_OK) {
+			engine_log(&engine, "scene init failed: %s", nb_error_string(result));
+			engine_shutdown(&engine);
+			return result;
+		}
+		engine.scene_ready = 1;
 	}
-	engine.scene_ready = 1;
 
 	engine_log_state(&engine);
 
@@ -457,27 +489,34 @@ nb_result_t engine_run(int argc, char** argv) {
 		float dt = platform_delta_time(&engine.platform);
 		if (dt > 0.25f) { dt = 0.25f; }
 
-		if (engine.editor_ready && editor_enabled(&engine.editor)) {
+		if (engine.launcher.active) {
+			launcher_begin_frame(&engine.launcher);
+		}
+		else if (engine.editor_ready && editor_enabled(&engine.editor)) {
 			editor_begin_frame(&engine.editor, &engine);
 		}
-		platform_pump_events(&engine.platform, &engine.input.quit, engine.editor_ready ? (platform_event_fn)editor_handle_event : NULL, &engine.editor);
+		platform_pump_events(&engine.platform, &engine.input.quit, (platform_event_fn)engine_handle_event, &engine);
 		input_update(&engine.input, &engine.platform);
 		if (engine.input.quit) { break; }
-		if (engine.editor_ready && editor_enabled(&engine.editor)) {
+		if (engine.launcher.active) {
+			launcher_update(&engine.launcher, &engine);
+			if (engine.launcher.exit_requested) { break; }
+		}
+		else if (engine.editor_ready && editor_enabled(&engine.editor)) {
 			editor_update(&engine.editor, &engine);
 		}
 
-		engine.clock.elapsed += dt;
-		engine.clock.accumulator += dt;
-
-		while (engine.clock.accumulator >= NB_ENGINE_FIXED_STEP) {
-			engine_update(&engine, NB_ENGINE_FIXED_STEP);
-			engine.clock.time += NB_ENGINE_FIXED_STEP;
-			engine.clock.accumulator -= NB_ENGINE_FIXED_STEP;
+		if (!engine.launcher.active) {
+			engine.clock.elapsed += dt;
+			engine.clock.accumulator += dt;
+			while (engine.clock.accumulator >= NB_ENGINE_FIXED_STEP) {
+				engine_update(&engine, NB_ENGINE_FIXED_STEP);
+				engine.clock.time += NB_ENGINE_FIXED_STEP;
+				engine.clock.accumulator -= NB_ENGINE_FIXED_STEP;
+			}
+			engine.clock.alpha = engine.clock.accumulator / NB_ENGINE_FIXED_STEP;
+			hud_update(&engine.hud, dt, engine.renderer.draw_calls, engine.renderer.drawn_triangles, engine.renderer.culled_triangles, engine.renderer.near_culled_triangles, resource_vram_used(&engine.resources));
 		}
-
-		engine.clock.alpha = engine.clock.accumulator / NB_ENGINE_FIXED_STEP;
-		hud_update(&engine.hud, dt, engine.renderer.draw_calls, engine.renderer.drawn_triangles, engine.renderer.culled_triangles, engine.renderer.near_culled_triangles, resource_vram_used(&engine.resources));
 		engine_render(&engine, engine.clock.alpha);
 
 		frames++;

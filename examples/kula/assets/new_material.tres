@@ -1,0 +1,12 @@
+[gd_resource type="NBPS1Material" load_steps=3 format=3]
+
+[ext_resource type="" path="" id=""]
+[ext_resource type="" path="" id=""]
+
+[resource]
+resource_name = "new_material.tres"
+blend_mode = "none"
+shade_mode = "gouraud"
+fog_enabled = true
+vertex_color_tint = Color(0.952941, 0.952941, 0.952941, 0.996078)
+transparent_index = 65535

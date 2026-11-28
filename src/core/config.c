@@ -152,6 +152,22 @@ static const char* config_find_arg_value(int argc, char** argv, const char* key)
 	return NULL;
 }
 
+int config_cli_requests_launcher(int argc, char** argv) {
+	const char* mode = config_find_arg_value(argc, argv, "mode");
+	return mode && strcmp(mode, "launcher") == 0;
+}
+
+int config_cli_selects_session(int argc, char** argv) {
+	if (config_cli_requests_launcher(argc, argv)) { return 0; }
+	if (config_find_arg_value(argc, argv, "mode")) { return 1; }
+	const char* const keys[] = { "project", "project_root", "root", "scene", "scene_path" };
+	for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+		const char* value = config_find_arg_value(argc, argv, keys[i]);
+		if (value && *value) { return 1; }
+	}
+	return 0;
+}
+
 int config_resolve_project_root(int argc, char** argv, char* out, size_t size) {
 	if (!out || size == 0) { return 0; }
 	const char* explicit = config_find_arg_value(argc, argv, "project");
@@ -471,7 +487,7 @@ static int config_set_value(render_config_t* config, const char* key, const char
 	}
 
 	else if (strcmp(key, "mode") == 0) {
-		if (strcmp(value, "game") != 0 && strcmp(value, "editor") != 0) { return 0; }
+		if (strcmp(value, "game") != 0 && strcmp(value, "editor") != 0 && strcmp(value, "launcher") != 0) { return 0; }
 		snprintf(config->mode, sizeof(config->mode), "%s", value);
 		config->editor_enabled = strcmp(value, "editor") == 0 ? 1 : 0;
 		return 1;
@@ -493,8 +509,8 @@ static int config_validate(const render_config_t* config) {
 	if (config->subdivide_area_threshold < 0.0f) { return 0; }
 	if (config->texture_vram_limit < 0) { return 0; }
 	if (config->max_frames < 0) { return 0; }
-	if (!config->scene_path[0]) { return 0; }
-	if (strcmp(config->mode, "game") != 0 && strcmp(config->mode, "editor") != 0) { return 0; }
+	if (strcmp(config->mode, "launcher") != 0 && !config->scene_path[0]) { return 0; }
+	if (strcmp(config->mode, "game") != 0 && strcmp(config->mode, "editor") != 0 && strcmp(config->mode, "launcher") != 0) { return 0; }
 
 	for (int i = 0; i < 3; i++) {
 		if (config->fog_color_rgb[i] < 0 || config->fog_color_rgb[i] > 255) { return 0; }
@@ -730,7 +746,7 @@ void config_print_usage(const char* program) {
 	fprintf(stdout, "  light_direction=0.4,0.7,1.0 light_color=1,1,1 texture_vram_limit=1048576\n");
 	fprintf(stdout, "  wireframe_enabled=0|1 xray_enabled=0|1\n");
 	fprintf(stdout, "  hud_enabled=0|1 hud_debug_enabled=0|1 editor_enabled=0|1 max_frames=0\n");
-	fprintf(stdout, "  mode=game|editor project_name=name project_root=path scene|scene_path=path\n");
+	fprintf(stdout, "  mode=launcher|game|editor project_name=name project_root=path scene|scene_path=path\n");
 	fprintf(stdout, "  log_level=debug|info|warn|error log_file=path\n");
 	fprintf(stdout, "hotkeys: 1 affine, 2 dither, 3 fog, 4 cull, 5 near-clip\n");
 	fprintf(stdout, "  p pause, f1 debug, f2 wireframe, f3 xray, f4 overlay, h hud\n");

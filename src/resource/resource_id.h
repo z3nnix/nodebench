@@ -13,6 +13,7 @@ typedef enum {
 	NB_RESOURCE_KIND_MATERIAL,
 	NB_RESOURCE_KIND_SCRIPT,
 	NB_RESOURCE_KIND_AUDIO,
+	NB_RESOURCE_KIND_PACKED_SCENE,
 	NB_RESOURCE_KIND_COUNT
 } nb_resource_kind_t;
 
@@ -26,5 +27,6 @@ typedef uint32_t texture_id;
 typedef uint32_t material_id;
 typedef uint32_t script_id;
 typedef uint32_t audio_id;
+typedef uint32_t packed_scene_id;
 
 #endif

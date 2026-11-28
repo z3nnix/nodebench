@@ -69,3 +69,29 @@ void texture_generate_demo(uint8_t* pixels, uint16_t* palette, int width, int he
 		}
 	}
 }
+
+void texture_generate_fallback(uint8_t* pixels, uint16_t* palette, int width, int height) {
+	if (!pixels || !palette || width != 64 || height != 64) { return; }
+	for (int i = 0; i < 16; i++) { palette[i] = 0; }
+	palette[0] = rgb555_pack(40, 48, 60);
+	palette[1] = rgb555_pack(56, 66, 82);
+	palette[2] = rgb555_pack(110, 145, 185);
+	palette[3] = rgb555_pack(175, 215, 255);
+	palette[4] = rgb555_pack(225, 242, 255);
+	palette[5] = rgb555_pack(255, 255, 255);
+	for (int i = 0; i < 2048; i++) { pixels[i] = 0; }
+	for (int y = 0; y < height; y++) {
+		for (int x = 0; x < width; x++) {
+			int index = ((x / 8) + (y / 8)) & 1;
+			if ((x & 7) == 0 || (y & 7) == 0) { index = 2; }
+			if ((x & 31) == 0 || (y & 31) == 0) { index = 3; }
+			if (x == 0 || y == 0) { index = 4; }
+			if (x == 0 && y == 0) { index = 5; }
+			uint8_t* byte = &pixels[y * (width / 2) + x / 2];
+
+			if (x & 1) { *byte = (uint8_t)((*byte & 0xF0u) | (uint8_t)index); }
+
+			else { *byte = (uint8_t)((*byte & 0x0Fu) | (uint8_t)(index << 4)); }
+		}
+	}
+}

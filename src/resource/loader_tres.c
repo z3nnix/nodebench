@@ -355,9 +355,7 @@ material_id material_load_tres(engine_t* engine, const char* path) {
 				tres_header_value(text, "type", resource->type, sizeof(resource->type));
 				tres_header_value(text, "path", resource->path, sizeof(resource->path));
 
-				if (!tres_load_ext_resource(resource)) {
-					goto cleanup;
-				}
+				tres_load_ext_resource(resource);
 			}
 
 			else if (strncmp(text, "[resource", 9) == 0) {
@@ -434,18 +432,24 @@ material_id material_load_tres(engine_t* engine, const char* path) {
 
 	tres_ext_resource_t* image_resource = tres_find_ext(ext_resources, ext_count, texture_id_ref);
 	tres_ext_resource_t* palette_resource = tres_find_ext(ext_resources, ext_count, palette_id_ref);
-	if (!image_resource || !palette_resource || !image_resource->has_image || !palette_resource->has_palette) {
-		goto cleanup;
-	}
-
-	texture_format_t format = palette_resource->palette.count > 16 ? NB_TEXTURE_8BIT : NB_TEXTURE_4BIT;
+	uint8_t fallback_pixels[2048];
+	uint16_t fallback_palette[16];
 	uint8_t* pixels = NULL;
-	if (!image_quantize(&image_resource->image, &palette_resource->palette, format, &pixels) || !pixels) {
-		goto cleanup;
+	texture_t texture;
+	int use_fallback = 1;
+
+	if (image_resource && image_resource->has_image && palette_resource && palette_resource->has_palette) {
+		texture_format_t format = palette_resource->palette.count > 16 ? NB_TEXTURE_8BIT : NB_TEXTURE_4BIT;
+		if (image_quantize(&image_resource->image, &palette_resource->palette, format, &pixels) && pixels) {
+			texture_init(&texture, image_resource->image.width, image_resource->image.height, format, pixels, palette_resource->palette.colors, transparent_index);
+			use_fallback = 0;
+		}
 	}
 
-	texture_t texture;
-	texture_init(&texture, image_resource->image.width, image_resource->image.height, format, pixels, palette_resource->palette.colors, transparent_index);
+	if (use_fallback) {
+		texture_generate_fallback(fallback_pixels, fallback_palette, 64, 64);
+		texture_init(&texture, 64, 64, NB_TEXTURE_4BIT, fallback_pixels, fallback_palette, NB_TEXTURE_TRANSPARENT);
+	}
 
 	texture_id texture_id = resource_add_texture(&engine->resources, &texture);
 	free(pixels);

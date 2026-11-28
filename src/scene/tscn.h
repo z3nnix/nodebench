@@ -39,15 +39,18 @@ typedef struct {
 	int has_mesh_ref;
 	int has_material_ref;
 	int has_script_ref;
+	int has_scene_ref;
 	int visible;
 	int tint_enabled;
 	vec3_t tint;
 	char mesh_ref[64];
 	char material_ref[64];
 	char script_ref[64];
+	char scene_ref[64];
 	nb_resource_ref_t mesh;
 	nb_resource_ref_t material;
 	nb_resource_ref_t script;
+	nb_resource_ref_t scene;
 } tscn_node_t;
 
 typedef struct {

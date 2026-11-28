@@ -55,6 +55,22 @@ const scene_doc_ext_t* scene_doc_find_ext_by_id(const scene_doc_t* doc, const ch
 	return NULL;
 }
 
+int scene_doc_add_ext(scene_doc_t* doc, const scene_doc_ext_t* ext) {
+	if (!doc || !ext || !ext->id[0] || !ext->path[0]) {
+		return 0;
+	}
+	if (scene_doc_find_ext_by_id(doc, ext->id)) {
+		return 0;
+	}
+	void* grown = nb_array_grow(doc->ext, &doc->ext_capacity, doc->ext_count + 1, sizeof(*doc->ext));
+	if (!grown) {
+		return 0;
+	}
+	doc->ext = grown;
+	doc->ext[doc->ext_count++] = *ext;
+	return 1;
+}
+
 static int scene_doc_copy_ext(scene_doc_t* doc, const tscn_file_t* file) {
 	doc->ext_count = 0;
 
@@ -188,7 +204,78 @@ static void scene_doc_write_transform(FILE* file, const node_t* node) {
 	fprintf(file, "transform = Transform3D(%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f)\n", local.m[0], local.m[1], local.m[2], local.m[4], local.m[5], local.m[6], local.m[8], local.m[9], local.m[10], local.m[12], local.m[13], local.m[14]);
 }
 
+static void scene_doc_mark_ext(scene_doc_t* doc, unsigned char* used, nb_resource_kind_t kind, uint32_t handle) {
+	if (!doc || !used || kind == NB_RESOURCE_KIND_NONE || handle == NB_RESOURCE_INVALID_ID) {
+		return;
+	}
+
+	for (int i = 0; i < doc->ext_count; i++) {
+		if (doc->ext[i].kind == kind && doc->ext[i].handle == handle) {
+			used[i] = 1;
+			return;
+		}
+	}
+}
+
+static void scene_doc_mark_ext_path(scene_doc_t* doc, unsigned char* used, nb_resource_kind_t kind, const char* path) {
+	if (!doc || !used || !path || !*path) {
+		return;
+	}
+
+	for (int i = 0; i < doc->ext_count; i++) {
+		if (doc->ext[i].kind == kind && strcmp(doc->ext[i].path, path) == 0) {
+			used[i] = 1;
+			return;
+		}
+	}
+}
+
+static void scene_doc_prune_ext(scene_doc_t* doc, const scene_t* scene) {
+	if (!doc || !scene || doc->ext_count <= 0) {
+		return;
+	}
+
+	unsigned char* used = (unsigned char*)calloc((size_t)doc->ext_count, 1);
+	if (!used) {
+		return;
+	}
+
+	for (int i = 0; i < scene->node_count; i++) {
+		const node_t* node = &scene->nodes[i];
+		if (node->components & NB_NODE_COMPONENT_INSTANCE_CHILD) {
+			continue;
+		}
+
+		if (node->components & NB_NODE_COMPONENT_MESH_RENDERER) {
+			scene_doc_mark_ext(doc, used, NB_RESOURCE_KIND_MESH, node->mesh_renderer.mesh);
+			scene_doc_mark_ext(doc, used, NB_RESOURCE_KIND_MATERIAL, node->mesh_renderer.material);
+		}
+		if (node->components & NB_NODE_COMPONENT_SCRIPT) {
+			scene_doc_mark_ext(doc, used, NB_RESOURCE_KIND_SCRIPT, node->script);
+		}
+		if (node->components & NB_NODE_COMPONENT_SCENE_INSTANCE) {
+			scene_doc_mark_ext_path(doc, used, NB_RESOURCE_KIND_PACKED_SCENE, node->scene_instance_path);
+		}
+	}
+
+	int write = 0;
+	for (int i = 0; i < doc->ext_count; i++) {
+		if (!used[i]) {
+			continue;
+		}
+
+		if (write != i) {
+			doc->ext[write] = doc->ext[i];
+		}
+		write++;
+	}
+
+	doc->ext_count = write;
+	free(used);
+}
+
 static void scene_doc_write(scene_doc_t* doc, FILE* file, scene_t* scene, engine_t* engine) {
+	scene_doc_prune_ext(doc, scene);
 	fprintf(file, "[gd_scene load_steps=%d format=3]\n\n", doc->ext_count + 1);
 
 	for (int i = 0; i < doc->ext_count; i++) {
@@ -212,6 +299,10 @@ static void scene_doc_write(scene_doc_t* doc, FILE* file, scene_t* scene, engine
 
 	for (int i = 0; i < scene->node_count; i++) {
 		node_t* node = &scene->nodes[i];
+		if (node->components & NB_NODE_COMPONENT_INSTANCE_CHILD) {
+			continue;
+		}
+
 		const char* type = scene_doc_node_type(node);
 
 		if (node->parent == NB_ENTITY_INVALID) {
@@ -235,6 +326,19 @@ static void scene_doc_write(scene_doc_t* doc, FILE* file, scene_t* scene, engine
 			}
 			if (mat_ext) {
 				fprintf(file, "material = ExtResource(\"%s\")\n", mat_ext->id);
+			}
+		}
+
+		if (node->components & NB_NODE_COMPONENT_SCENE_INSTANCE) {
+			const scene_doc_ext_t* scene_ext = NULL;
+			for (int j = 0; j < doc->ext_count; j++) {
+				if (doc->ext[j].kind == NB_RESOURCE_KIND_PACKED_SCENE && strcmp(doc->ext[j].path, node->scene_instance_path) == 0) {
+					scene_ext = &doc->ext[j];
+					break;
+				}
+			}
+			if (scene_ext) {
+				fprintf(file, "instance = ExtResource(\"%s\")\n", scene_ext->id);
 			}
 		}
 

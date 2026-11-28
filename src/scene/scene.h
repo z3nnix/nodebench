@@ -17,6 +17,8 @@
 #define NB_NODE_COMPONENT_SCRIPT 0x00000010u
 #define NB_NODE_COMPONENT_COLLIDER 0x00000020u
 #define NB_NODE_COMPONENT_AUDIO 0x00000040u
+#define NB_NODE_COMPONENT_SCENE_INSTANCE 0x00000080u
+#define NB_NODE_COMPONENT_INSTANCE_CHILD 0x00000100u
 
 typedef uint32_t entity_id_t;
 
@@ -75,6 +77,9 @@ typedef struct {
 	script_id script;
 	void* script_instance;
 	char script_module[NB_NODE_NAME_CAPACITY];
+	packed_scene_id scene_instance;
+	char scene_instance_path[256];
+	entity_id_t instance_owner;
 	int visible;
 	int world_visible;
 	int tint_enabled;

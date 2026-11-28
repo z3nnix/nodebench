@@ -73,6 +73,8 @@ typedef struct {
 } render_config_t;
 
 void render_config_init(render_config_t* config);
+int config_cli_selects_session(int argc, char** argv);
+int config_cli_requests_launcher(int argc, char** argv);
 int config_resolve_project_root(int argc, char** argv, char* out, size_t size);
 int config_load_file(render_config_t* config, const char* path);
 int config_apply_cli(render_config_t* config, int argc, char** argv);

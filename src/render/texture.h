@@ -22,5 +22,6 @@ typedef struct {
 void texture_init(texture_t* texture, int width, int height, texture_format_t format, const uint8_t* pixels, const uint16_t* palette, int transparent_index);
 uint16_t texture_sample(const texture_t* texture, float u, float v);
 void texture_generate_demo(uint8_t* pixels, uint16_t* palette, int width, int height);
+void texture_generate_fallback(uint8_t* pixels, uint16_t* palette, int width, int height);
 
 #endif

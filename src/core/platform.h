@@ -58,5 +58,6 @@ void* platform_window(const platform_t* platform);
 void* platform_renderer(const platform_t* platform);
 int platform_scancode_from_name(const char* name);
 const char* platform_scancode_name(platform_scancode_t scancode);
+int platform_open_directory(const char* path);
 
 #endif
